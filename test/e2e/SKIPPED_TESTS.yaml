@@ -1,5 +1,12 @@
 skipped_tests:
 # CloudStack
+#Airgapped tests
+- TestCloudStackKubernetes123RedhatAirgappedRegistryMirror
+- TestCloudStackKubernetes124RedhatAirgappedRegistryMirror
+# This test will fail until we the latest minor release version is 15.x as there is a preflight for 1.24
+- TestCloudStackKubernetes124RedhatUpgradeFromLatestMinorReleaseAlwaysNetworkPolicy
+- TestCloudStackKubernetes124ManagementClusterUpgradeFromLatest
+- TestCloudStackKubernetes124UpgradeFromLatestMinorRelease
 - TestCloudStackKubernetes123RedhatProxyConfig
 - TestCloudStackKubernetes124RedhatProxyConfig
 - TestCloudStackKubernetes123AddRemoveAz
@@ -49,6 +56,8 @@ skipped_tests:
 - TestTinkerbellUpgrade125MulticlusterWorkloadClusterWorkerScaleupWithAPI
 - TestTinkerbellUpgrade126MulticlusterWorkloadClusterWorkerScaleupWithFluxAPI
 - TestTinkerbellUpgrade127MulticlusterWorkloadClusterWorkerScaleupGitFluxWithAPI
+- TestTinkerbellUpgrade127MulticlusterWorkloadClusterWorkerScaleDown
+- TestTinkerbellUpgrade127MulticlusterWorkloadClusterWorkerScaleup
 # Skipping ETCD tests
 - TestTinkerbellKubernetes126UbuntuExternalEtcdSimpleFlow
 # Skipping skip power action tests - Not going to work because e2e test powers on CP and worker node at the same time and worker node times out early waiting for ipxe
@@ -60,6 +69,7 @@ skipped_tests:
 - TestTinkerbellKubernetes124RedHatSimpleFlow
 - TestTinkerbellKubernetes125RedHatSimpleFlow
 - TestTinkerbellKubernetes126RedHatSimpleFlow
+- TestTinkerbellKubernetes127RedHatSimpleFlow
 - TestTinkerbellKubernetes123UbuntuSimpleFlow
 - TestTinkerbellKubernetes124UbuntuSimpleFlow
 - TestTinkerbellKubernetes125UbuntuSimpleFlow
@@ -84,10 +94,8 @@ skipped_tests:
 - TestTinkerbellKubernetes127BottleRocketCuratedPackagesPrometheusSimpleFlow
 - TestTinkerbellUbuntuSingleNodeCuratedPackagesFlow
 - TestTinkerbellBottleRocketSingleNodeCuratedPackagesFlow
-- TestTinkerbellUbuntuSingleNodeCuratedPackagesEmissaryFlow
 - TestTinkerbellBottleRocketSingleNodeCuratedPackagesEmissaryFlow
 - TestTinkerbellUbuntuSingleNodeCuratedPackagesHarborFlow
-- TestTinkerbellBottleRocketSingleNodeCuratedPackagesHarborFlow
 - TestTinkerbellUbuntuSingleNodeCuratedPackagesAdotSimpleFlow
 - TestTinkerbellBottleRocketSingleNodeCuratedPackagesAdotSimpleFlow
 - TestTinkerbellUbuntuSingleNodeCuratedPackagesPrometheusSimpleFlow
