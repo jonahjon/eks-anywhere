@@ -165,12 +165,13 @@ func cloudStackAPIWorkloadUpgradeTests(wc *framework.WorkloadCluster, cloudstack
 			},
 		},
 		{
-			name: "replace existing worker node groups",
+			name: "replace existing worker node groups and cilium policy enforcement mode",
 			steps: []cloudStackAPIUpgradeTestStep{
 				{
-					name: "replacing existing worker node groups",
+					name: "replacing existing worker node groups + update cilium policy enforcement mode always",
 					configFiller: api.JoinClusterConfigFillers(
 						api.ClusterToConfigFiller(
+							api.WithCiliumPolicyEnforcementMode(v1alpha1.CiliumPolicyModeAlways),
 							api.RemoveAllWorkerNodeGroups(), // This gives us a blank slate
 						),
 						// Add new WorkerNodeGroups
@@ -181,38 +182,14 @@ func cloudStackAPIWorkloadUpgradeTests(wc *framework.WorkloadCluster, cloudstack
 				},
 			},
 		},
-		{
-			name: "availability zones and cilium policy enforcement mode",
-			steps: []cloudStackAPIUpgradeTestStep{
-				{
-					name: "add availability zone + update cilium policy enforcement mode always",
-					configFiller: api.JoinClusterConfigFillers(
-						api.ClusterToConfigFiller(
-							api.WithCiliumPolicyEnforcementMode(v1alpha1.CiliumPolicyModeAlways),
-						),
-						api.CloudStackToConfigFiller(
-							framework.UpdateAddCloudStackAz2(),
-						),
-					),
-				},
-				{
-					name: "remove cloudstack availability zone",
-					configFiller: api.JoinClusterConfigFillers(
-						api.CloudStackToConfigFiller(
-							framework.RemoveAllCloudStackAzs(),
-							framework.UpdateAddCloudStackAz1(),
-						),
-					),
-				},
-			},
-		},
 	}
 }
 
 func runCloudStackAPIUpgradeTest(t *testing.T, test *framework.ClusterE2ETest, ut cloudStackAPIUpgradeTest) {
 	for _, step := range ut.steps {
 		t.Logf("Running API upgrade test: %s", step.name)
-		test.UpgradeClusterWithKubectl(step.configFiller)
+		test.UpdateClusterConfig(step.configFiller)
+		test.ApplyClusterManifest()
 		test.ValidateClusterStateWithT(t)
 	}
 }

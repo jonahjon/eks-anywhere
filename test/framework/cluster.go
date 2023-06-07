@@ -83,15 +83,17 @@ type ClusterE2ETest struct {
 	ClusterConfig                *cluster.Config
 	clusterStateValidationConfig *clusterf.StateValidationConfig
 	Provider                     Provider
-	clusterFillers               []api.ClusterFiller
-	KubectlClient                *executables.Kubectl
-	GitProvider                  git.ProviderClient
-	GitClient                    git.Client
-	HelmInstallConfig            *HelmInstallConfig
-	PackageConfig                *PackageConfig
-	GitWriter                    filewriter.FileWriter
-	eksaBinaryLocation           string
-	ExpectFailure                bool
+	// TODO(g-gaston): migrate uses of clusterFillers to clusterConfigFillers
+	clusterFillers       []api.ClusterFiller
+	clusterConfigFillers []api.ClusterConfigFiller
+	KubectlClient        *executables.Kubectl
+	GitProvider          git.ProviderClient
+	GitClient            git.Client
+	HelmInstallConfig    *HelmInstallConfig
+	PackageConfig        *PackageConfig
+	GitWriter            filewriter.FileWriter
+	eksaBinaryLocation   string
+	ExpectFailure        bool
 	// PersistentCluster avoids creating the clusters if it finds a kubeconfig
 	// in the corresponding cluster folder. Useful for local development of tests.
 	// When generating a new base cluster config, it will read from disk instead of
@@ -555,7 +557,9 @@ func (e *ClusterE2ETest) baseClusterConfigUpdates(opts ...CommandOpt) []api.Clus
 		api.WithControlPlaneCount(1), api.WithWorkerNodeCount(1), api.WithEtcdCountIfExternal(1),
 	)
 	clusterFillers = append(clusterFillers, e.clusterFillers...)
-	configFillers := []api.ClusterConfigFiller{api.ClusterToConfigFiller(clusterFillers...)}
+	configFillers := make([]api.ClusterConfigFiller, 0, len(e.clusterConfigFillers)+1)
+	configFillers = append(configFillers, api.ClusterToConfigFiller(clusterFillers...))
+	configFillers = append(configFillers, e.clusterConfigFillers...)
 	configFillers = append(configFillers, e.Provider.ClusterConfigUpdates()...)
 
 	// If we are persisting an existing cluster, set the control plane endpoint back to the original, since
@@ -797,22 +801,10 @@ func WithClusterUpgrade(fillers ...api.ClusterFiller) ClusterE2ETestOpt {
 	}
 }
 
-// UpgradeClusterWithKubectl uses client-side logic to upgrade a cluster that was created using the CLI.
-func (e *ClusterE2ETest) UpgradeClusterWithKubectl(fillers ...api.ClusterConfigFiller) {
-	// The CLI adds the BundlesRef field to the config and writes it to disk.
-	// We want to grab the existing BundlesRef, and update our test ClusterConfig
-	// because updating it with a nil value after previously being set will throw a webhook error.
-	if e.ClusterConfig.Cluster.Spec.BundlesRef == nil {
-		fullClusterConfigLocation := filepath.Join(e.ClusterConfigFolder, e.ClusterName+"-eks-a-cluster.yaml")
-		e.T.Logf("Parsing cluster config from disk: %s", fullClusterConfigLocation)
-		config, err := cluster.ParseConfigFromFile(fullClusterConfigLocation)
-		if err != nil {
-			e.T.Fatalf("Failed parsing generated cluster config: %s", err)
-		}
-		e.ClusterConfig.Cluster.Spec.BundlesRef = config.Cluster.Spec.BundlesRef
-	}
-	e.UpdateClusterConfig(fillers...)
-	e.ApplyClusterManifest()
+// LoadClusterConfigGeneratedByCLI loads the full cluster config from the file generated when a cluster is created using the CLI.
+func (e *ClusterE2ETest) LoadClusterConfigGeneratedByCLI(fillers ...api.ClusterConfigFiller) {
+	fullClusterConfigLocation := filepath.Join(e.ClusterConfigFolder, e.ClusterName+"-eks-a-cluster.yaml")
+	e.parseClusterConfigFromDisk(fullClusterConfigLocation)
 }
 
 // UpgradeClusterWithNewConfig applies the test options, re-generates the cluster config file and runs the CLI upgrade command.
@@ -2223,4 +2215,8 @@ func (e *ClusterE2ETest) CreateCloudStackCredentialsSecretFromEnvVar(name string
 		e.T.Fatalf("error applying credentials secret to cluster %s: %v", e.Cluster().Name, err)
 		return
 	}
+}
+
+func (e *ClusterE2ETest) addClusterConfigFillers(fillers ...api.ClusterConfigFiller) {
+	e.clusterConfigFillers = append(e.clusterConfigFillers, fillers...)
 }
