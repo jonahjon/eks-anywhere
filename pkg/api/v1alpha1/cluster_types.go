@@ -62,8 +62,24 @@ type ClusterSpec struct {
 	ManagementCluster           ManagementCluster            `json:"managementCluster,omitempty"`
 	PodIAMConfig                *PodIAMConfig                `json:"podIamConfig,omitempty"`
 	Packages                    *PackageConfiguration        `json:"packages,omitempty"`
-	// BundlesRef contains a reference to the Bundles containing the desired dependencies for the cluster
-	BundlesRef *BundlesRef `json:"bundlesRef,omitempty"`
+	// BundlesRef contains a reference to the Bundles containing the desired dependencies for the cluster.
+	// DEPRECATED: Use EksaVersion instead.
+	BundlesRef  *BundlesRef  `json:"bundlesRef,omitempty"`
+	EksaVersion *EksaVersion `json:"eksaVersion,omitempty"`
+}
+
+// EksaVersion is the semver identifying the release of eks-a used to populate the cluster components.
+type EksaVersion string
+
+// Equal checks if two EksaVersions are equal.
+func (n *EksaVersion) Equal(o *EksaVersion) bool {
+	if n == o {
+		return true
+	}
+	if n == nil || o == nil {
+		return false
+	}
+	return *n == *o
 }
 
 // HasAWSIamConfig checks if AWSIamConfig is configured for the cluster.
@@ -131,6 +147,9 @@ func (n *Cluster) Equal(o *Cluster) bool {
 		return false
 	}
 	if !n.Spec.BundlesRef.Equal(o.Spec.BundlesRef) {
+		return false
+	}
+	if !n.Spec.EksaVersion.Equal(o.Spec.EksaVersion) {
 		return false
 	}
 
@@ -561,6 +580,10 @@ func (n *CiliumConfig) Equal(o *CiliumConfig) bool {
 		return false
 	}
 
+	if n.EgressMasqueradeInterfaces != o.EgressMasqueradeInterfaces {
+		return false
+	}
+
 	oSkipUpgradeIsFalse := o.SkipUpgrade == nil || !*o.SkipUpgrade
 	nSkipUpgradeIsFalse := n.SkipUpgrade == nil || !*n.SkipUpgrade
 
@@ -768,6 +791,10 @@ type CiliumConfig struct {
 	// PolicyEnforcementMode determines communication allowed between pods. Accepted values are default, always, never.
 	PolicyEnforcementMode CiliumPolicyEnforcementMode `json:"policyEnforcementMode,omitempty"`
 
+	// EgressMasquaradeInterfaces determines which network interfaces are used for masquerading. Accepted values are a valid interface name or interface prefix.
+	// +optional
+	EgressMasqueradeInterfaces string `json:"egressMasqueradeInterfaces,omitempty"`
+
 	// SkipUpgrade indicicates that Cilium maintenance should be skipped during upgrades. This can
 	// be used when operators wish to self manage the Cilium installation.
 	// +optional
@@ -813,7 +840,7 @@ type ClusterStatus struct {
 	// EksdReleaseRef defines the properties of the EKS-D object on the cluster
 	EksdReleaseRef *EksdReleaseRef `json:"eksdReleaseRef,omitempty"`
 	// +optional
-	Conditions []clusterv1.Condition `json:"conditions,omitempty"`
+	Conditions []Condition `json:"conditions,omitempty"`
 
 	// ReconciledGeneration represents the .metadata.generation the last time the
 	// cluster was successfully reconciled. It is the latest generation observed
@@ -830,6 +857,9 @@ type ClusterStatus struct {
 	// to its behavior if changed externally. Its meaning and implementation are
 	// subject to change in the future.
 	ChildrenReconciledGeneration int64 `json:"childrenReconciledGeneration,omitempty"`
+
+	// ObservedGeneration is the latest generation observed by the controller.
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 }
 
 type EksdReleaseRef struct {
@@ -1227,10 +1257,12 @@ func (c *Cluster) ConvertConfigToConfigGenerateStruct() *ClusterGenerate {
 	return config
 }
 
+// IsManaged returns true if the Cluster is not self managed.
 func (c *Cluster) IsManaged() bool {
 	return !c.IsSelfManaged()
 }
 
+// ManagedBy returns the Cluster's management cluster's name.
 func (c *Cluster) ManagedBy() string {
 	return c.Spec.ManagementCluster.Name
 }

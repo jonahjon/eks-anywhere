@@ -3,6 +3,7 @@ package reconciler_test
 import (
 	"context"
 	"fmt"
+	"os"
 	"testing"
 	"time"
 
@@ -10,7 +11,6 @@ import (
 	. "github.com/onsi/gomega"
 	"github.com/pkg/errors"
 	corev1 "k8s.io/api/core/v1"
-	storagev1 "k8s.io/api/storage/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	vspherev1 "sigs.k8s.io/cluster-api-provider-vsphere/api/v1beta1"
 	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
@@ -26,6 +26,7 @@ import (
 	anywherev1 "github.com/aws/eks-anywhere/pkg/api/v1alpha1"
 	clusterspec "github.com/aws/eks-anywhere/pkg/cluster"
 	"github.com/aws/eks-anywhere/pkg/clusterapi"
+	"github.com/aws/eks-anywhere/pkg/config"
 	"github.com/aws/eks-anywhere/pkg/constants"
 	"github.com/aws/eks-anywhere/pkg/controller"
 	"github.com/aws/eks-anywhere/pkg/controller/clientutil"
@@ -65,7 +66,7 @@ func TestReconcilerReconcileSuccess(t *testing.T) {
 
 	tt.remoteClientRegistry.EXPECT().GetClient(
 		tt.ctx, client.ObjectKey{Name: "workload-cluster", Namespace: "eksa-system"},
-	).Return(remoteClient, nil).Times(2)
+	).Return(remoteClient, nil).Times(1)
 	tt.cniReconciler.EXPECT().Reconcile(tt.ctx, logger, remoteClient, tt.buildSpec())
 
 	result, err := tt.reconciler().Reconcile(tt.ctx, logger, tt.cluster)
@@ -143,6 +144,20 @@ func TestReconcilerFailToSetUpMachineConfigCP(t *testing.T) {
 	tt.Expect(err).To(BeNil(), "error should be nil to prevent requeue")
 	tt.Expect(result).To(Equal(controller.Result{Result: &reconcile.Result{}}), "result should stop reconciliation")
 	tt.Expect(tt.cluster.Status.FailureMessage).To(HaveValue(ContainSubstring("validating vCenter setup for VSphereMachineConfig")))
+}
+
+func TestSetupEnvVars(t *testing.T) {
+	tt := newReconcilerTest(t)
+	tt.withFakeClient()
+
+	err := reconciler.SetupEnvVars(context.Background(), tt.datacenterConfig, tt.client)
+	tt.Expect(os.Getenv(config.EksavSphereUsernameKey)).To(Equal("user"))
+	tt.Expect(os.Getenv(config.EksavSpherePasswordKey)).To(Equal("pass"))
+
+	tt.Expect(os.Getenv(config.EksavSphereCPUsernameKey)).To(Equal("userCP"))
+	tt.Expect(os.Getenv(config.EksavSphereCPPasswordKey)).To(Equal("passCP"))
+
+	tt.Expect(err).To(BeNil())
 }
 
 func TestReconcilerControlPlaneIsNotReady(t *testing.T) {
@@ -277,15 +292,6 @@ func TestReconcilerReconcileControlPlaneSuccess(t *testing.T) {
 	)
 
 	tt.ShouldEventuallyExist(tt.ctx,
-		&addonsv1.ClusterResourceSet{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "workload-cluster-csi",
-				Namespace: "eksa-system",
-			},
-		},
-	)
-
-	tt.ShouldEventuallyExist(tt.ctx,
 		&controlplanev1.KubeadmControlPlane{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "workload-cluster",
@@ -308,15 +314,8 @@ func TestReconcilerReconcileControlPlaneSuccess(t *testing.T) {
 	})
 	tt.ShouldEventuallyExist(tt.ctx, capiCluster)
 
-	tt.ShouldEventuallyExist(tt.ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "workload-cluster-vsphere-csi-controller", Namespace: "eksa-system"}})
-	tt.ShouldEventuallyExist(tt.ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "workload-cluster-csi-vsphere-config", Namespace: "eksa-system"}})
 	tt.ShouldEventuallyExist(tt.ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "workload-cluster-cloud-controller-manager", Namespace: "eksa-system"}})
 	tt.ShouldEventuallyExist(tt.ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "workload-cluster-cloud-provider-vsphere-credentials", Namespace: "eksa-system"}})
-	tt.ShouldEventuallyExist(tt.ctx, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "workload-cluster-vsphere-csi-controller-role", Namespace: "eksa-system"}})
-	tt.ShouldEventuallyExist(tt.ctx, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "workload-cluster-vsphere-csi-controller-binding", Namespace: "eksa-system"}})
-	tt.ShouldEventuallyExist(tt.ctx, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "workload-cluster-csi.vsphere.vmware.com", Namespace: "eksa-system"}})
-	tt.ShouldEventuallyExist(tt.ctx, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "workload-cluster-vsphere-csi-node", Namespace: "eksa-system"}})
-	tt.ShouldEventuallyExist(tt.ctx, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "workload-cluster-vsphere-csi-controller", Namespace: "eksa-system"}})
 	tt.ShouldEventuallyExist(tt.ctx, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "workload-cluster-cpi-manifests", Namespace: "eksa-system"}})
 }
 
@@ -329,42 +328,6 @@ func TestReconcilerReconcileControlPlaneFailure(t *testing.T) {
 	_, err := tt.reconciler().ReconcileControlPlane(tt.ctx, test.NewNullLogger(), spec)
 
 	tt.Expect(err).To(HaveOccurred())
-}
-
-func TestReconcilerInstallStorageClassInstall(t *testing.T) {
-	tt := newReconcilerTest(t)
-	tt.createAllObjs()
-
-	logger := test.NewNullLogger()
-	remoteClient := env.Client()
-	spec := tt.buildSpec()
-
-	tt.remoteClientRegistry.EXPECT().GetClient(
-		tt.ctx, client.ObjectKey{Name: "workload-cluster", Namespace: "eksa-system"},
-	).Return(remoteClient, nil)
-
-	result, err := tt.reconciler().InstallStorageClass(tt.ctx, logger, spec)
-
-	tt.Expect(err).NotTo(HaveOccurred())
-	tt.Expect(tt.cluster.Status.FailureMessage).To(BeZero())
-	tt.Expect(result).To(Equal(controller.Result{}))
-	tt.ShouldEventuallyExist(tt.ctx, &storagev1.StorageClass{ObjectMeta: metav1.ObjectMeta{Name: "standard", Namespace: "eksa-system"}})
-}
-
-func TestReconcilerInstallStorageClassSkip(t *testing.T) {
-	tt := newReconcilerTest(t)
-	tt.createAllObjs()
-
-	logger := test.NewNullLogger()
-	spec := tt.buildSpec()
-	spec.VSphereDatacenter.Spec.DisableCSI = true
-
-	result, err := tt.reconciler().InstallStorageClass(tt.ctx, logger, spec)
-
-	tt.Expect(err).NotTo(HaveOccurred())
-	tt.Expect(tt.cluster.Status.FailureMessage).To(BeZero())
-	tt.Expect(result).To(Equal(controller.Result{}))
-	tt.ShouldEventuallyNotExist(tt.ctx, &storagev1.StorageClass{ObjectMeta: metav1.ObjectMeta{Name: "standard", Namespace: "eksa-system"}})
 }
 
 type reconcilerTest struct {
@@ -503,12 +466,6 @@ func (tt *reconcilerTest) cleanup() {
 	tt.DeleteAllOfAndWait(tt.ctx, &bootstrapv1.KubeadmConfigTemplate{})
 	tt.DeleteAllOfAndWait(tt.ctx, &vspherev1.VSphereMachineTemplate{})
 	tt.DeleteAllOfAndWait(tt.ctx, &clusterv1.MachineDeployment{})
-	tt.DeleteAndWait(tt.ctx, &storagev1.StorageClass{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "standard",
-			Namespace: "eksa-system",
-		},
-	})
 }
 
 func (tt *reconcilerTest) buildSpec() *clusterspec.Spec {
@@ -640,8 +597,10 @@ func createSecret() *corev1.Secret {
 			APIVersion: "v1",
 		},
 		Data: map[string][]byte{
-			"username": []byte("test"),
-			"password": []byte("test"),
+			"username":    []byte("user"),
+			"password":    []byte("pass"),
+			"usernameCP":  []byte("userCP"),
+			"passwordCP":  []byte("passCP"),
 		},
 	}
 }

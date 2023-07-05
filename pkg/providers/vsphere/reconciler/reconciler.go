@@ -88,6 +88,17 @@ func SetupEnvVars(ctx context.Context, vsphereDatacenter *anywherev1.VSphereData
 		return fmt.Errorf("failed setting env %s: %v", config.EksavSpherePasswordKey, err)
 	}
 
+	vsphereCPUsername := secret.Data["usernameCP"]
+	vsphereCPPassword := secret.Data["passwordCP"]
+
+	if err := os.Setenv(config.EksavSphereCPUsernameKey, string(vsphereCPUsername)); err != nil {
+		return fmt.Errorf("failed setting env %s: %v", config.EksavSphereCPUsernameKey, err)
+	}
+
+	if err := os.Setenv(config.EksavSphereCPPasswordKey, string(vsphereCPPassword)); err != nil {
+		return fmt.Errorf("failed setting env %s: %v", config.EksavSphereCPPasswordKey, err)
+	}
+
 	if err := vsphere.SetupEnvVars(vsphereDatacenter); err != nil {
 		return fmt.Errorf("failed setting env vars: %v", err)
 	}
@@ -111,7 +122,6 @@ func (r *Reconciler) Reconcile(ctx context.Context, log logr.Logger, cluster *an
 		r.CheckControlPlaneReady,
 		r.ReconcileCNI,
 		r.ReconcileWorkers,
-		r.InstallStorageClass,
 	).Run(ctx, log, clusterSpec)
 }
 
@@ -212,26 +222,6 @@ func (r *Reconciler) ReconcileWorkers(ctx context.Context, log logr.Logger, spec
 	}
 
 	return clusters.ReconcileWorkersForEKSA(ctx, log, r.client, spec.Cluster, clusters.ToWorkers(w))
-}
-
-// InstallStorageClass install default storage class in workload cluster.
-func (r *Reconciler) InstallStorageClass(ctx context.Context, log logr.Logger, clusterSpec *c.Spec) (controller.Result, error) {
-	log = log.WithValues("phase", "reconcileStorageClass")
-	if clusterSpec.VSphereDatacenter.Spec.DisableCSI {
-		log.V(3).Info("VSphere CSI disabled, skipping storage class installation")
-		return controller.Result{}, nil
-	}
-
-	remoteClient, err := r.remoteClientRegistry.GetClient(ctx, controller.CapiClusterObjectKey(clusterSpec.Cluster))
-	if err != nil {
-		return controller.Result{}, err
-	}
-	log.Info("Applying Storage Class")
-	if err := serverside.ReconcileYaml(ctx, remoteClient, vsphere.GetDefaultStorageClass()); err != nil {
-		return controller.Result{}, err
-	}
-
-	return controller.Result{}, nil
 }
 
 func toClientControlPlane(cp *vsphere.ControlPlane) *clusters.ControlPlane {

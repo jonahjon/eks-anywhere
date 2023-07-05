@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"sigs.k8s.io/cluster-api/bootstrap/kubeadm/api/v1beta1"
 
@@ -17,11 +16,9 @@ import (
 	"github.com/aws/eks-anywhere/pkg/executables"
 	"github.com/aws/eks-anywhere/pkg/manifests/bundles"
 	"github.com/aws/eks-anywhere/pkg/manifests/releases"
-	"github.com/aws/eks-anywhere/pkg/retrier"
 	anywheretypes "github.com/aws/eks-anywhere/pkg/types"
 	releasev1 "github.com/aws/eks-anywhere/release/api/v1alpha1"
 	clusterf "github.com/aws/eks-anywhere/test/framework/cluster"
-	"github.com/aws/eks-anywhere/test/framework/cluster/validations"
 )
 
 const (
@@ -449,10 +446,10 @@ func WithVSphereWorkerNodeGroup(name string, workerNodeGroup *WorkerNodeGroup, f
 	}
 }
 
-// WithWorkerNodeGroup returns an api.ClusterFiller that adds a new workerNodeGroupConfiguration and
+// WithNewWorkerNodeGroup returns an api.ClusterFiller that adds a new workerNodeGroupConfiguration and
 // a corresponding VSphereMachineConfig to the cluster config.
-func (v *VSphere) WithWorkerNodeGroup(name string, workerNodeGroup *WorkerNodeGroup, fillers ...api.VSphereMachineConfigFiller) api.ClusterConfigFiller {
-	machineConfigFillers := append([]api.VSphereMachineConfigFiller{updateMachineSSHAuthorizedKey()}, fillers...)
+func (v *VSphere) WithNewWorkerNodeGroup(name string, workerNodeGroup *WorkerNodeGroup) api.ClusterConfigFiller {
+	machineConfigFillers := []api.VSphereMachineConfigFiller{updateMachineSSHAuthorizedKey()}
 	return api.JoinClusterConfigFillers(
 		api.VSphereToConfigFiller(vSphereMachineConfig(name, machineConfigFillers...)),
 		api.ClusterToConfigFiller(buildVSphereWorkerNodeGroupClusterFiller(name, workerNodeGroup)),
@@ -501,6 +498,18 @@ func (v *VSphere) ClusterConfigUpdates() []api.ClusterConfigFiller {
 	f = append(f, api.WithControlPlaneEndpointIP(clusterIP))
 
 	return []api.ClusterConfigFiller{api.ClusterToConfigFiller(f...), api.VSphereToConfigFiller(v.fillers...)}
+}
+
+// WithKubeVersionAndOS returns a cluster config filler that sets the cluster kube version and the right template for all
+// vsphere machine configs.
+func (v *VSphere) WithKubeVersionAndOS(osFamily anywherev1.OSFamily, kubeVersion anywherev1.KubernetesVersion) api.ClusterConfigFiller {
+	return api.JoinClusterConfigFillers(
+		api.ClusterToConfigFiller(api.WithKubernetesVersion(kubeVersion)),
+		api.VSphereToConfigFiller(
+			api.WithTemplateForAllMachines(v.templateForDevRelease(osFamily, kubeVersion)),
+			api.WithOsFamilyForAllMachines(osFamily),
+		),
+	)
 }
 
 // CleanupVMs deletes all the VMs owned by the test EKS-A cluster. It satisfies the test framework Provider.
@@ -719,12 +728,7 @@ func readVSphereConfig() (vsphereConfig, error) {
 
 // ClusterStateValidations returns a list of provider specific validations.
 func (v *VSphere) ClusterStateValidations() []clusterf.StateValidation {
-	return []clusterf.StateValidation{
-		clusterf.RetriableStateValidation(
-			retrier.NewWithMaxRetries(60, 5*time.Second),
-			validations.ValidateCSI,
-		),
-	}
+	return []clusterf.StateValidation{}
 }
 
 // ValidateNodesDiskGiB validates DiskGiB for all the machines.

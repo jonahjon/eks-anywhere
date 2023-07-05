@@ -13,7 +13,7 @@ When you run `eksctl anywhere upgrade cluster -f ./cluster.yaml`, EKS Anywhere r
 EKS Anywhere then performs the upgrade, modifying your cluster to match the updated specification. 
 The upgrade command also upgrades core components of EKS Anywhere and lets the user enjoy the latest features, bug fixes and security patches.
 
-**Upgrades should never be run from ephemeral nodes (short-lived systems that spin up and down on a regular basis). If an upgrade fails, it is very important not to delete the Docker containers running the KinD bootstrap cluster. During an upgrade, the bootstrap cluster contains critical EKS Anywhere components. If it is deleted after a failed upgrade, they cannot be recovered.**
+**Upgrades should never be run from ephemeral nodes (short-lived systems that spin up and down on a regular basis). It is highly recommended to run the `upgrade` command with the `--no-timeouts` option when the command is executed through automation. This prevents the CLI from timing out and enables cluster operators to fix issues preventing the upgrade from completing while the process is running. If an upgrade fails, it is very important not to delete the Docker containers running the KinD bootstrap cluster. During an upgrade, the bootstrap cluster contains critical EKS Anywhere components. If it is deleted after a failed upgrade, they cannot be recovered.**
 
 {{% alert title="Important" color="warning" %}}
 
@@ -29,6 +29,14 @@ When triggering a workload cluster upgrade after upgrading the management cluste
 The changes in the EKS Anywhere controller can trigger a machine rollout on the workload cluster during upgrade, even if the changes to the workload cluster spec didn't require one (for example, scaling down a worker node group).
 
 {{% /alert %}}
+
+### Prepare DHCP IP addresses pool
+
+Please make sure to have sufficient available IP addresses in your DHCP pool to cover the new machines. The number of necessary IPs can be calculated from the machine counts and [maxSurge config]({{< relref "./baremetal-upgrades.md/#upgraderolloutstrategyrollingupdatemaxsurge" >}}). For create operation, each machine needs 1 IP. For upgrade operation, control plane and workers need just 1 extra IP (total, not per node) due to rolling upgrade strategy. Each external etcd machine needs 1 extra IP address (ex: 3 etcd nodes would require 3 more IP addresses) because EKS Anywhere needs to create all the new etcd machines before removing any old ones. You will also need additional IPs to be equal to the number used for maxSurge. After calculating the required IPs, please make sure your environment has enough available IPs before performing the upgrade operation.
+
+* Example 1, to create a cluster with 3 control plane node, 2 worker nodes and 3 stacked etcd, you will need at least 5 (3+2+0, as stacked etcd is deployed as part of the control plane nodes) available IPs. To upgrade the same cluster with default maxSurge (0), you will need 1 (1+0+0) additional available IPs.
+* Example 2, to create a cluster with 1 control plane node, 2 worker nodes and 3 unstacked (external) etcd nodes, you will need at least 6 (1+2+3) available IPs. To upgrade the same cluster with default maxSurge (0), you will need at least 4 (1+3+0) additional available IPs.
+* Example 3, to upgrade a cluster with 1 control plane node, 2 worker nodes and 3 unstacked (external) etcd nodes, with maxSurge set to 2, you will need at least 6 (1+3+2) additional available IPs.
 
 ### EKS Anywhere Version Upgrades
 
@@ -201,6 +209,29 @@ After finishing the task, make sure you resume the cluster reconciliation by rem
 ```bash
 kubectl annotate clusters.anywhere.eks.amazonaws.com ${CLUSTER_NAME} -n ${CLUSTER_NAMESPACE} anywhere.eks.amazonaws.com/paused-
 ```
+
+>**_NOTE (vSphere only):_** Installing and managing CSI as part of vSphere cluster operations was deprecated in EKS Anywhere version `v0.16.0` and has been removed in `v0.17.0`. If you are using EKS-A version v0.16.0 and above to upgrade a cluster that has the vSphere CSI Driver installed in it,
+> you will need to remove the CSI resources manually from the cluster. Delete the `DaemonSet` and `Deployment` first, as they 
+> rely on the other resources.
+> 
+> These are the resources you would need to delete:
+> * `vsphere-csi-controller-role` (kind: ClusterRole)
+> * `vsphere-csi-controller-binding` (kind: ClusterRoleBinding)
+> * `csi.vsphere.vmware.com` (kind: CSIDriver)
+> 
+> These are the resources you would need to delete
+> in the `kube-system` namespace:
+> * `vsphere-csi-controller` (kind: ServiceAccount)
+> * `csi-vsphere-config` (kind: Secret)
+> * `vsphere-csi-node` (kind: DaemonSet)
+> * `vsphere-csi-controller` (kind: Deployment)
+> 
+> These are the resources you would need to delete
+> in the `eksa-system` namespace from the management cluster.
+> * `<cluster-name>-csi` (kind: ClusterResourceSet)
+> 
+> **_Note:_** If your cluster is self-managed, you would delete `<cluster-name>-csi` (kind: ClusterResourceSet) from the same cluster.
+
 
 ### Upgradeable Cluster Attributes
 EKS Anywhere `upgrade` supports upgrading more than just the `kubernetesVersion`, 

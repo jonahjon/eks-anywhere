@@ -2999,6 +2999,7 @@ spec:
                               type: string
                           type: object
                         driver:
+                          description: This field has been deprecated
                           properties:
                             arch:
                               description: Architectures of the asset
@@ -3121,6 +3122,7 @@ spec:
                               type: string
                           type: object
                         syncer:
+                          description: This field has been deprecated
                           properties:
                             arch:
                               description: Architectures of the asset
@@ -3155,12 +3157,10 @@ spec:
                       - clusterAPIController
                       - clusterTemplate
                       - components
-                      - driver
                       - kubeProxy
                       - kubeVip
                       - manager
                       - metadata
-                      - syncer
                       - version
                       type: object
                   required:
@@ -3644,8 +3644,9 @@ spec:
             description: ClusterSpec defines the desired state of Cluster.
             properties:
               bundlesRef:
-                description: BundlesRef contains a reference to the Bundles containing
-                  the desired dependencies for the cluster
+                description: 'BundlesRef contains a reference to the Bundles containing
+                  the desired dependencies for the cluster. DEPRECATED: Use EksaVersion
+                  instead.'
                 properties:
                   apiVersion:
                     description: APIVersion refers to the Bundles APIVersion
@@ -3673,6 +3674,11 @@ spec:
                     properties:
                       cilium:
                         properties:
+                          egressMasqueradeInterfaces:
+                            description: EgressMasquaradeInterfaces determines which
+                              network interfaces are used for masquerading. Accepted
+                              values are a valid interface name or interface prefix.
+                            type: string
                           policyEnforcementMode:
                             description: PolicyEnforcementMode determines communication
                               allowed between pods. Accepted values are default, always,
@@ -3813,6 +3819,10 @@ spec:
                   name:
                     type: string
                 type: object
+              eksaVersion:
+                description: EksaVersion is the semver identifying the release of
+                  eks-a used to populate the cluster components.
+                type: string
               externalEtcdConfiguration:
                 description: ExternalEtcdConfiguration defines the configuration options
                   for using unstacked etcd topology.
@@ -4157,6 +4167,11 @@ spec:
                 description: Descriptive message about a fatal problem while reconciling
                   a cluster
                 type: string
+              observedGeneration:
+                description: ObservedGeneration is the latest generation observed
+                  by the controller.
+                format: int64
+                type: integer
               reconciledGeneration:
                 description: 'ReconciledGeneration represents the .metadata.generation
                   the last time the cluster was successfully reconciled. It is the
@@ -4219,6 +4234,93 @@ spec:
           status:
             description: DockerDatacenterConfigStatus defines the observed state of
               DockerDatacenterConfig.
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+status:
+  acceptedNames:
+    kind: ""
+    plural: ""
+  conditions: []
+  storedVersions: []
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.6.1
+  creationTimestamp: null
+  name: eksareleases.anywhere.eks.amazonaws.com
+spec:
+  group: anywhere.eks.amazonaws.com
+  names:
+    kind: EKSARelease
+    listKind: EKSAReleaseList
+    plural: eksareleases
+    singular: eksarelease
+  scope: Namespaced
+  versions:
+  - name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: EKSARelease is the mapping between release semver of EKS-A and
+          a Bundles resource on the cluster.
+        properties:
+          apiVersion:
+            description: 'APIVersion defines the versioned schema of this representation
+              of an object. Servers should convert recognized schemas to the latest
+              internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources'
+            type: string
+          kind:
+            description: 'Kind is a string value representing the REST resource this
+              object represents. Servers may infer this from the endpoint the client
+              submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds'
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: EKSAReleaseSpec defines the desired state of EKSARelease.
+            properties:
+              bundleManifestUrl:
+                description: Manifest url to parse bundle information from for this
+                  EKS-A release
+                type: string
+              bundlesRef:
+                description: Reference to a Bundles resource in the cluster
+                properties:
+                  apiVersion:
+                    description: APIVersion refers to the Bundles APIVersion
+                    type: string
+                  name:
+                    description: Name refers to the name of the Bundles object in
+                      the cluster
+                    type: string
+                  namespace:
+                    description: Namespace refers to the Bundles's namespace
+                    type: string
+                required:
+                - apiVersion
+                - name
+                - namespace
+                type: object
+              gitCommit:
+                description: Git commit the component is built from, before any patches
+                type: string
+              releaseDate:
+                description: Date of EKS-A Release
+                type: string
+              version:
+                description: EKS-A release semantic version
+                type: string
+            required:
+            - bundleManifestUrl
+            - bundlesRef
+            - gitCommit
+            - releaseDate
+            - version
             type: object
         type: object
     served: true
@@ -4546,6 +4648,23 @@ spec:
           spec:
             description: NutanixMachineConfigSpec defines the desired state of NutanixMachineConfig.
             properties:
+              additionalCategories:
+                description: additionalCategories is a list of optional categories
+                  to be added to the VM. Categories must be created in Prism Central
+                  before they can be used.
+                items:
+                  description: NutanixCategoryIdentifier holds the identity of a Nutanix
+                    Prism Central category.
+                  properties:
+                    key:
+                      description: key is the Key of the category in the Prism Central.
+                      type: string
+                    value:
+                      description: value is the category value linked to the key in
+                        the Prism Central.
+                      type: string
+                  type: object
+                type: array
               cluster:
                 description: cluster is to identify the cluster (the Prism Element
                   under management of the Prism Central), in which the Machine's VM
@@ -5735,8 +5854,6 @@ spec:
             properties:
               datacenter:
                 type: string
-              disableCSI:
-                type: boolean
               insecure:
                 type: boolean
               network:
@@ -6025,6 +6142,21 @@ rules:
   resources:
   - secrets
   verbs:
+  - patch
+  - update
+- apiGroups:
+  - anywhere.eks.amazonaws.com
+  resources:
+  - eksareleases
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - packages.eks.amazonaws.com
+  resources:
+  - packagebundlecontrollers
+  verbs:
   - delete
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -6033,6 +6165,37 @@ metadata:
   creationTimestamp: null
   name: eksa-manager-role
 rules:
+- apiGroups:
+  - ""
+  resources:
+  - events
+  verbs:
+  - create
+  - patch
+  - update
+- apiGroups:
+  - ""
+  resources:
+  - namespaces
+  verbs:
+  - create
+  - delete
+- apiGroups:
+  - ""
+  resources:
+  - nodes
+  verbs:
+  - list
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - watch
 - apiGroups:
   - addons.cluster.x-k8s.io
   resources:
@@ -6049,25 +6212,16 @@ rules:
   - anywhere.eks.amazonaws.com
   resources:
   - awsiamconfigs
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - anywhere.eks.amazonaws.com
-  resources:
-  - awsiamconfigs
-  - bundles
   - cloudstackdatacenterconfigs
   - cloudstackmachineconfigs
   - clusters
   - dockerdatacenterconfigs
+  - fluxconfigs
+  - gitopsconfigs
   - nutanixdatacenterconfigs
   - nutanixmachineconfigs
+  - oidcconfigs
+  - snowdatacenterconfigs
   - snowippools
   - snowmachineconfigs
   - tinkerbelldatacenterconfigs
@@ -6075,8 +6229,6 @@ rules:
   - vspheredatacenterconfigs
   - vspheremachineconfigs
   verbs:
-  - create
-  - delete
   - get
   - list
   - patch
@@ -6103,7 +6255,6 @@ rules:
   - anywhere.eks.amazonaws.com
   resources:
   - awsiamconfigs/status
-  - bundles/status
   - cloudstackdatacenterconfigs/status
   - cloudstackmachineconfigs/status
   - clusters/status
@@ -6121,76 +6272,45 @@ rules:
 - apiGroups:
   - anywhere.eks.amazonaws.com
   resources:
-  - fluxconfigs
+  - bundles
   verbs:
-  - create
-  - delete
   - get
   - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - anywhere.eks.amazonaws.com
-  resources:
-  - gitopsconfigs
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - anywhere.eks.amazonaws.com
-  resources:
-  - oidcconfigs
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - anywhere.eks.amazonaws.com
-  resources:
-  - snowdatacenterconfigs
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - anywhere.eks.amazonaws.com
-  resources:
-  - snowmachineconfigs
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
   - watch
 - apiGroups:
   - bmc.tinkerbell.org
   resources:
   - machines
-  - machines/status
   verbs:
+  - list
+  - watch
+- apiGroups:
+  - bootstrap.cluster.x-k8s.io
+  resources:
+  - kubeadmconfigtemplates
+  verbs:
+  - create
   - get
   - list
+  - patch
+  - update
   - watch
 - apiGroups:
   - cluster.x-k8s.io
   resources:
-  - '*'
+  - clusters
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - cluster.x-k8s.io
+  resources:
+  - machinedeployments
   verbs:
   - create
   - delete
@@ -6208,12 +6328,46 @@ rules:
   - list
   - watch
 - apiGroups:
+  - controlplane.cluster.x-k8s.io
+  resources:
+  - kubeadmcontrolplanes
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - coordination.k8s.io
+  resources:
+  - leases
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - update
+  - watch
+- apiGroups:
   - distro.eks.amazonaws.com
   resources:
   - releases
   verbs:
   - get
   - list
+  - watch
+- apiGroups:
+  - etcdcluster.cluster.x-k8s.io
+  resources:
+  - '*'
+  verbs:
+  - create
+  - get
+  - list
+  - patch
+  - update
   - watch
 - apiGroups:
   - infrastructure.cluster.x-k8s.io
@@ -6225,6 +6379,8 @@ rules:
   - cloudstackmachinetemplates
   - dockerclusters
   - dockermachinetemplates
+  - nutanixclusters
+  - nutanixmachinetemplates
   - tinkerbellclusters
   - tinkerbellmachinetemplates
   - vsphereclusters
@@ -6253,208 +6409,9 @@ rules:
   - tinkerbell.org
   resources:
   - hardware
-  - hardware/status
   verbs:
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - etcdcluster.cluster.x-k8s.io
-  resources:
-  - '*'
-  verbs:
-  - create
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - cluster.x-k8s.io
-  resources:
-  - '*'
-  verbs:
-  - create
-  - get
-  - list
-  - patch
-  - update
-  - watch
-  - delete
-- apiGroups:
-  - controlplane.cluster.x-k8s.io
-  resources:
-  - '*'
-  verbs:
-  - create
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - bootstrap.cluster.x-k8s.io
-  resources:
-  - kubeadmconfigtemplates
-  - kubeadmconfigtemplates/status
-  verbs:
-  - create
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - addons.cluster.x-k8s.io
-  resources:
-  - clusterresourcesets
-  - clusterresourcesets/status
-  verbs:
-  - get
-  - list
-  - patch
-  - update
-  - watch
-  - create
-- apiGroups:
-  - infrastructure.cluster.x-k8s.io
-  resources:
-  - cloudstackclusters
-  - cloudstackclusters/status
-  - cloudstackmachinetemplates
-  - cloudstackmachinetemplates/status
-  - vsphereclusters
-  - vsphereclusters/status
-  - vspheremachinetemplates
-  - vspheremachinetemplates/status
-  - dockerclusters
-  - dockerclusters/status
-  - dockermachinetemplates
-  - dockermachinetemplates/status
-  - nutanixclusters
-  - nutanixclusters/status
-  - nutanixmachinetemplates
-  - nutanixmachinetemplates/status
-  verbs:
-  - get
-  - list
-  - patch
-  - update
-  - watch
-  - create
-  - delete
-- apiGroups:
-  - etcdcluster.cluster.x-k8s.io
-  resources:
-  - etcdadmclusters
-  - etcdadmclusters/status
-  verbs:
-  - get
   - list
   - watch
-  - patch
-  - update
-- apiGroups:
-  - ""
-  resources:
-  - secrets
-  - secrets/status
-  - configmaps
-  - configmaps/status
-  - namespaces
-  - namespaces/status
-  - services
-  - services/status
-  verbs:
-  - get
-  - list
-  - patch
-  - update
-  - watch
-  - create
-- apiGroups:
-  - rbac.authorization.k8s.io
-  resources:
-  - clusterroles
-  - clusterroles/status
-  - clusterrolebindings
-  - clusterrolebindings/status
-  - rolebindings
-  - rolebindings/status
-  verbs:
-  - get
-  - list
-  - patch
-  - update
-  - watch
-  - create
-- apiGroups:
-  - apps
-  resources:
-  - daemonsets
-  - daemonsets/status
-  - deployments
-  verbs:
-  - get
-  - list
-  - patch
-  - update
-  - watch
-  - create
-- apiGroups:
-  - ""
-  resources:
-  - events
-  verbs:
-  - create
-  - patch
-  - update
-- apiGroups:
-  - ""
-  resources:
-  - nodes
-  verbs:
-  - '*'
-- apiGroups:
-  - ""
-  resources:
-  - nodes/status
-  verbs:
-  - patch
-- apiGroups:
-  - ""
-  resources:
-  - serviceaccounts
-  - endpoints
-  verbs:
-  - create
-  - get
-  - list
-  - patch
-  - watch
-  - update
-- apiGroups:
-  - ""
-  resources:
-  - persistentvolumes
-  verbs:
-  - get
-  - list
-  - watch
-  - update
-- apiGroups:
-  - coordination.k8s.io
-  resources:
-  - leases
-  verbs:
-  - get
-  - watch
-  - list
-  - delete
-  - update
-  - create
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

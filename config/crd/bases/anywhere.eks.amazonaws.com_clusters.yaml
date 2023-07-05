@@ -37,8 +37,9 @@ spec:
             description: ClusterSpec defines the desired state of Cluster.
             properties:
               bundlesRef:
-                description: BundlesRef contains a reference to the Bundles containing
-                  the desired dependencies for the cluster
+                description: 'BundlesRef contains a reference to the Bundles containing
+                  the desired dependencies for the cluster. DEPRECATED: Use EksaVersion
+                  instead.'
                 properties:
                   apiVersion:
                     description: APIVersion refers to the Bundles APIVersion
@@ -66,6 +67,11 @@ spec:
                     properties:
                       cilium:
                         properties:
+                          egressMasqueradeInterfaces:
+                            description: EgressMasquaradeInterfaces determines which
+                              network interfaces are used for masquerading. Accepted
+                              values are a valid interface name or interface prefix.
+                            type: string
                           policyEnforcementMode:
                             description: PolicyEnforcementMode determines communication
                               allowed between pods. Accepted values are default, always,
@@ -206,6 +212,10 @@ spec:
                   name:
                     type: string
                 type: object
+              eksaVersion:
+                description: EksaVersion is the semver identifying the release of
+                  eks-a used to populate the cluster components.
+                type: string
               externalEtcdConfiguration:
                 description: ExternalEtcdConfiguration defines the configuration options
                   for using unstacked etcd topology.
@@ -550,6 +560,11 @@ spec:
                 description: Descriptive message about a fatal problem while reconciling
                   a cluster
                 type: string
+              observedGeneration:
+                description: ObservedGeneration is the latest generation observed
+                  by the controller.
+                format: int64
+                type: integer
               reconciledGeneration:
                 description: 'ReconciledGeneration represents the .metadata.generation
                   the last time the cluster was successfully reconciled. It is the

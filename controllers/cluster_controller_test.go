@@ -16,6 +16,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
+	controlplanev1 "sigs.k8s.io/cluster-api/controlplane/kubeadm/api/v1beta1"
+	"sigs.k8s.io/cluster-api/util/conditions"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -24,6 +26,7 @@ import (
 
 	"github.com/aws/eks-anywhere/controllers"
 	"github.com/aws/eks-anywhere/controllers/mocks"
+	"github.com/aws/eks-anywhere/internal/test"
 	"github.com/aws/eks-anywhere/internal/test/envtest"
 	anywherev1 "github.com/aws/eks-anywhere/pkg/api/v1alpha1"
 	"github.com/aws/eks-anywhere/pkg/cluster"
@@ -41,10 +44,51 @@ import (
 
 var clusterName = "test-cluster"
 
+var controlPlaneInitalizationInProgressReason = "The first control plane instance is not available yet"
+
 type vsphereClusterReconcilerTest struct {
 	govcClient *vspheremocks.MockProviderGovcClient
 	reconciler *controllers.ClusterReconciler
 	client     client.Client
+}
+
+func testKubeadmControlPlaneFromCluster(cluster *anywherev1.Cluster) *controlplanev1.KubeadmControlPlane {
+	k := controller.CAPIKubeadmControlPlaneKey(cluster)
+	return test.KubeadmControlPlane(func(kcp *controlplanev1.KubeadmControlPlane) {
+		kcp.Name = k.Name
+		kcp.Namespace = k.Namespace
+		expectedReplicas := int32(cluster.Spec.ControlPlaneConfiguration.Count)
+
+		kcp.Status = controlplanev1.KubeadmControlPlaneStatus{
+			Replicas:        expectedReplicas,
+			UpdatedReplicas: expectedReplicas,
+			ReadyReplicas:   expectedReplicas,
+			Conditions: clusterv1.Conditions{
+				{
+					Type:   controlplanev1.AvailableCondition,
+					Status: apiv1.ConditionStatus("True"),
+				},
+				{
+					Type:   clusterv1.ReadyCondition,
+					Status: apiv1.ConditionStatus("True"),
+				},
+			},
+		}
+	})
+}
+
+func machineDeploymentsFromCluster(cluster *anywherev1.Cluster) []clusterv1.MachineDeployment {
+	return []clusterv1.MachineDeployment{
+		*test.MachineDeployment(func(md *clusterv1.MachineDeployment) {
+			md.ObjectMeta.Name = "md-0"
+			md.ObjectMeta.Labels = map[string]string{
+				clusterv1.ClusterNameLabel: cluster.Name,
+			}
+			md.Status.Replicas = 1
+			md.Status.ReadyReplicas = 1
+			md.Status.UpdatedReplicas = 1
+		}),
+	}
 }
 
 func newVsphereClusterReconcilerTest(t *testing.T, objs ...runtime.Object) *vsphereClusterReconcilerTest {
@@ -101,18 +145,25 @@ func TestClusterReconcilerReconcileSelfManagedCluster(t *testing.T) {
 			BundlesRef: &anywherev1.BundlesRef{
 				Name: "my-bundles-ref",
 			},
+			ClusterNetwork: anywherev1.ClusterNetwork{
+				CNIConfig: &anywherev1.CNIConfig{
+					Cilium: &anywherev1.CiliumConfig{},
+				},
+			},
 		},
 		Status: anywherev1.ClusterStatus{
 			ReconciledGeneration: 1,
 		},
 	}
 
+	kcp := testKubeadmControlPlaneFromCluster(selfManagedCluster)
+
 	controller := gomock.NewController(t)
 	providerReconciler := mocks.NewMockProviderClusterReconciler(controller)
 	iam := mocks.NewMockAWSIamConfigReconciler(controller)
 	clusterValidator := mocks.NewMockClusterValidator(controller)
 	registry := newRegistryMock(providerReconciler)
-	c := fake.NewClientBuilder().WithRuntimeObjects(selfManagedCluster).Build()
+	c := fake.NewClientBuilder().WithRuntimeObjects(selfManagedCluster, kcp).Build()
 	mockPkgs := mocks.NewMockPackagesClient(controller)
 	providerReconciler.EXPECT().ReconcileWorkerNodes(ctx, gomock.AssignableToTypeOf(logr.Logger{}), sameName(selfManagedCluster))
 
@@ -120,6 +171,426 @@ func TestClusterReconcilerReconcileSelfManagedCluster(t *testing.T) {
 	result, err := r.Reconcile(ctx, clusterRequest(selfManagedCluster))
 	g.Expect(err).ToNot(HaveOccurred())
 	g.Expect(result).To(Equal(ctrl.Result{}))
+}
+
+func TestClusterReconcilerReconcileConditions(t *testing.T) {
+	testCases := []struct {
+		testName                string
+		skipCNIUpgrade          bool
+		kcpStatus               controlplanev1.KubeadmControlPlaneStatus
+		machineDeploymentStatus clusterv1.MachineDeploymentStatus
+		result                  ctrl.Result
+		wantConditions          []anywherev1.Condition
+	}{
+		{
+			testName: "cluster not ready, control plane not initialized",
+			kcpStatus: controlplanev1.KubeadmControlPlaneStatus{
+				Conditions: clusterv1.Conditions{
+					{
+						Type:   controlplanev1.AvailableCondition,
+						Status: apiv1.ConditionStatus("False"),
+					},
+				},
+			},
+			machineDeploymentStatus: clusterv1.MachineDeploymentStatus{},
+			wantConditions: []anywherev1.Condition{
+				*conditions.FalseCondition(anywherev1.ControlPlaneInitializedCondition, anywherev1.ControlPlaneInitializationInProgressReason, clusterv1.ConditionSeverityInfo, controlPlaneInitalizationInProgressReason),
+				*conditions.FalseCondition(anywherev1.ControlPlaneReadyCondition, anywherev1.ControlPlaneInitializationInProgressReason, clusterv1.ConditionSeverityInfo, controlPlaneInitalizationInProgressReason),
+				*conditions.FalseCondition(anywherev1.DefaultCNIConfiguredCondition, anywherev1.ControlPlaneNotReadyReason, clusterv1.ConditionSeverityInfo, ""),
+				*conditions.FalseCondition(anywherev1.WorkersReadyConditon, anywherev1.ControlPlaneNotInitializedReason, clusterv1.ConditionSeverityInfo, ""),
+				*conditions.FalseCondition(anywherev1.ReadyCondition, anywherev1.ControlPlaneInitializationInProgressReason, clusterv1.ConditionSeverityInfo, controlPlaneInitalizationInProgressReason),
+			},
+			result: ctrl.Result{Requeue: false, RequeueAfter: 10 * time.Second},
+		},
+		{
+			testName: "cluster not ready, control plane initialized",
+			kcpStatus: controlplanev1.KubeadmControlPlaneStatus{
+				Conditions: clusterv1.Conditions{
+					{
+						Type:   controlplanev1.AvailableCondition,
+						Status: apiv1.ConditionStatus("True"),
+					},
+					{
+						Type:   clusterv1.ReadyCondition,
+						Status: apiv1.ConditionStatus("False"),
+					},
+				},
+			},
+			machineDeploymentStatus: clusterv1.MachineDeploymentStatus{},
+			wantConditions: []anywherev1.Condition{
+				*conditions.TrueCondition(anywherev1.ControlPlaneInitializedCondition),
+				*conditions.FalseCondition(anywherev1.ControlPlaneReadyCondition, anywherev1.ScalingUpReason, clusterv1.ConditionSeverityInfo, "Scaling up control plane nodes, 1 expected (0 actual)"),
+				*conditions.FalseCondition(anywherev1.DefaultCNIConfiguredCondition, anywherev1.ControlPlaneNotReadyReason, clusterv1.ConditionSeverityInfo, ""),
+				*conditions.FalseCondition(anywherev1.WorkersReadyConditon, anywherev1.ScalingUpReason, clusterv1.ConditionSeverityInfo, "Scaling up worker nodes, 1 expected (0 actual)"),
+				*conditions.FalseCondition(anywherev1.ReadyCondition, anywherev1.ScalingUpReason, clusterv1.ConditionSeverityInfo, "Scaling up control plane nodes, 1 expected (0 actual)"),
+			},
+			result: ctrl.Result{Requeue: false, RequeueAfter: 10 * time.Second},
+		},
+		{
+			testName: "cluster not ready, control plane ready",
+			kcpStatus: controlplanev1.KubeadmControlPlaneStatus{
+				ReadyReplicas:   1,
+				Replicas:        1,
+				UpdatedReplicas: 1,
+				Conditions: clusterv1.Conditions{
+					{
+						Type:   controlplanev1.AvailableCondition,
+						Status: apiv1.ConditionStatus("True"),
+					},
+					{
+						Type:   clusterv1.ReadyCondition,
+						Status: apiv1.ConditionStatus("True"),
+					},
+				},
+			},
+			machineDeploymentStatus: clusterv1.MachineDeploymentStatus{},
+			wantConditions: []anywherev1.Condition{
+				*conditions.FalseCondition(anywherev1.ReadyCondition, anywherev1.ScalingUpReason, clusterv1.ConditionSeverityInfo, "Scaling up worker nodes, 1 expected (0 actual)"),
+				*conditions.TrueCondition(anywherev1.ControlPlaneReadyCondition),
+				*conditions.FalseCondition(anywherev1.WorkersReadyConditon, anywherev1.ScalingUpReason, clusterv1.ConditionSeverityInfo, "Scaling up worker nodes, 1 expected (0 actual)"),
+				*conditions.TrueCondition(anywherev1.ControlPlaneInitializedCondition),
+			},
+			result: ctrl.Result{Requeue: false, RequeueAfter: 10 * time.Second},
+		},
+		{
+			testName: "cluster ready",
+			kcpStatus: controlplanev1.KubeadmControlPlaneStatus{
+				ReadyReplicas:   1,
+				Replicas:        1,
+				UpdatedReplicas: 1,
+				Conditions: clusterv1.Conditions{
+					{
+						Type:   controlplanev1.AvailableCondition,
+						Status: apiv1.ConditionStatus("True"),
+					},
+					{
+						Type:   clusterv1.ReadyCondition,
+						Status: apiv1.ConditionStatus("True"),
+					},
+				},
+			},
+			machineDeploymentStatus: clusterv1.MachineDeploymentStatus{
+				ReadyReplicas:   1,
+				Replicas:        1,
+				UpdatedReplicas: 1,
+			},
+			wantConditions: []anywherev1.Condition{
+				*conditions.TrueCondition(anywherev1.ReadyCondition),
+				*conditions.TrueCondition(anywherev1.ControlPlaneReadyCondition),
+				*conditions.TrueCondition(anywherev1.WorkersReadyConditon),
+				*conditions.TrueCondition(anywherev1.ControlPlaneInitializedCondition),
+			},
+			result: ctrl.Result{},
+		},
+	}
+	for _, tt := range testCases {
+		t.Run(tt.testName, func(t *testing.T) {
+			config, bundles := baseTestVsphereCluster()
+			config.Cluster.Name = "test-cluster"
+			config.Cluster.Generation = 2
+			config.Cluster.Status.ObservedGeneration = 1
+			config.Cluster.Spec.ManagementCluster = anywherev1.ManagementCluster{Name: "management-cluster"}
+
+			config.Cluster.Spec.ClusterNetwork.CNIConfig.Cilium.SkipUpgrade = ptr.Bool(tt.skipCNIUpgrade)
+
+			g := NewWithT(t)
+
+			objs := make([]runtime.Object, 0, 4+len(config.ChildObjects()))
+			kcp := test.KubeadmControlPlane(func(kcp *controlplanev1.KubeadmControlPlane) {
+				k := controller.CAPIKubeadmControlPlaneKey(config.Cluster)
+				kcp.Name = k.Name
+				kcp.Namespace = k.Namespace
+				kcp.Status = tt.kcpStatus
+			})
+
+			md1 := test.MachineDeployment(func(md *clusterv1.MachineDeployment) {
+				md.ObjectMeta.Labels = map[string]string{
+					clusterv1.ClusterNameLabel: config.Cluster.Name,
+				}
+				md.Status = tt.machineDeploymentStatus
+			})
+
+			objs = append(objs, config.Cluster, bundles, kcp, md1)
+
+			for _, o := range config.ChildObjects() {
+				objs = append(objs, o)
+			}
+
+			testClient := fake.NewClientBuilder().WithRuntimeObjects(objs...).Build()
+
+			mockCtrl := gomock.NewController(t)
+			providerReconciler := mocks.NewMockProviderClusterReconciler(mockCtrl)
+			iam := mocks.NewMockAWSIamConfigReconciler(mockCtrl)
+			clusterValidator := mocks.NewMockClusterValidator(mockCtrl)
+			registry := newRegistryMock(providerReconciler)
+			mockPkgs := mocks.NewMockPackagesClient(mockCtrl)
+
+			ctx := context.Background()
+			log := testr.New(t)
+			logCtx := ctrl.LoggerInto(ctx, log)
+
+			iam.EXPECT().EnsureCASecret(logCtx, log, sameName(config.Cluster)).Return(controller.Result{}, nil)
+			iam.EXPECT().Reconcile(logCtx, log, sameName(config.Cluster)).Return(controller.Result{}, nil)
+			providerReconciler.EXPECT().Reconcile(logCtx, log, sameName(config.Cluster)).Times(1)
+			clusterValidator.EXPECT().ValidateManagementClusterName(logCtx, log, sameName(config.Cluster)).Return(nil)
+
+			mockPkgs.EXPECT().Reconcile(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any())
+
+			r := controllers.NewClusterReconciler(testClient, registry, iam, clusterValidator, mockPkgs)
+
+			result, err := r.Reconcile(logCtx, clusterRequest(config.Cluster))
+
+			g.Expect(err).ToNot(HaveOccurred())
+			g.Expect(result).To(Equal(tt.result))
+
+			api := envtest.NewAPIExpecter(t, testClient)
+			c := envtest.CloneNameNamespace(config.Cluster)
+			api.ShouldEventuallyMatch(logCtx, c, func(g Gomega) {
+				g.Expect(c.Status.ObservedGeneration).To(
+					Equal(c.Generation), "status generation should have been updated to the metadata generation's value",
+				)
+			})
+
+			api.ShouldEventuallyMatch(logCtx, c, func(g Gomega) {
+				for _, wantCondition := range tt.wantConditions {
+					condition := conditions.Get(c, wantCondition.Type)
+					g.Expect(condition).ToNot(BeNil())
+					g.Expect(condition).To((conditions.HaveSameStateOf(&wantCondition)))
+				}
+			})
+		})
+	}
+}
+
+func TestClusterReconcilerReconcileSelfManagedClusterConditions(t *testing.T) {
+	testCases := []struct {
+		testName                string
+		skipCNIUpgrade          bool
+		kcpStatus               controlplanev1.KubeadmControlPlaneStatus
+		machineDeploymentStatus clusterv1.MachineDeploymentStatus
+		result                  ctrl.Result
+		wantConditions          []anywherev1.Condition
+	}{
+		{
+			testName: "cluster not ready, control plane not ready",
+			kcpStatus: controlplanev1.KubeadmControlPlaneStatus{
+				Conditions: clusterv1.Conditions{
+					{
+						Type:   controlplanev1.AvailableCondition,
+						Status: apiv1.ConditionStatus("True"),
+					},
+					{
+						Type:   clusterv1.ReadyCondition,
+						Status: apiv1.ConditionStatus("False"),
+					},
+				},
+			},
+			machineDeploymentStatus: clusterv1.MachineDeploymentStatus{},
+			skipCNIUpgrade:          false,
+			wantConditions: []anywherev1.Condition{
+				*conditions.TrueCondition(anywherev1.ControlPlaneInitializedCondition),
+				*conditions.FalseCondition(anywherev1.ControlPlaneReadyCondition, anywherev1.ScalingUpReason, clusterv1.ConditionSeverityInfo, "Scaling up control plane nodes, 1 expected (0 actual)"),
+				*conditions.FalseCondition(anywherev1.DefaultCNIConfiguredCondition, anywherev1.ControlPlaneNotReadyReason, clusterv1.ConditionSeverityInfo, ""),
+				*conditions.FalseCondition(anywherev1.WorkersReadyConditon, anywherev1.ScalingUpReason, clusterv1.ConditionSeverityInfo, "Scaling up worker nodes, 1 expected (0 actual)"),
+				*conditions.FalseCondition(anywherev1.ReadyCondition, anywherev1.ScalingUpReason, clusterv1.ConditionSeverityInfo, "Scaling up control plane nodes, 1 expected (0 actual)"),
+			},
+			result: ctrl.Result{Requeue: false, RequeueAfter: 10 * time.Second},
+		},
+		{
+			testName: "cluster not ready, control plane ready",
+			kcpStatus: controlplanev1.KubeadmControlPlaneStatus{
+				ReadyReplicas:   1,
+				Replicas:        1,
+				UpdatedReplicas: 1,
+				Conditions: clusterv1.Conditions{
+					{
+						Type:   controlplanev1.AvailableCondition,
+						Status: apiv1.ConditionStatus("True"),
+					},
+					{
+						Type:   clusterv1.ReadyCondition,
+						Status: apiv1.ConditionStatus("True"),
+					},
+				},
+			},
+			machineDeploymentStatus: clusterv1.MachineDeploymentStatus{},
+			skipCNIUpgrade:          false,
+			wantConditions: []anywherev1.Condition{
+				*conditions.FalseCondition(anywherev1.ReadyCondition, anywherev1.ScalingUpReason, clusterv1.ConditionSeverityInfo, "Scaling up worker nodes, 1 expected (0 actual)"),
+				*conditions.TrueCondition(anywherev1.ControlPlaneReadyCondition),
+				*conditions.TrueCondition(anywherev1.DefaultCNIConfiguredCondition),
+				*conditions.FalseCondition(anywherev1.WorkersReadyConditon, anywherev1.ScalingUpReason, clusterv1.ConditionSeverityInfo, "Scaling up worker nodes, 1 expected (0 actual)"),
+				*conditions.TrueCondition(anywherev1.ControlPlaneInitializedCondition),
+			},
+			result: ctrl.Result{Requeue: false, RequeueAfter: 10 * time.Second},
+		},
+		{
+			testName: "cluster not ready, skip upgrades for default cni",
+			kcpStatus: controlplanev1.KubeadmControlPlaneStatus{
+				ReadyReplicas:   1,
+				Replicas:        1,
+				UpdatedReplicas: 1,
+				Conditions: clusterv1.Conditions{
+					{
+						Type:   controlplanev1.AvailableCondition,
+						Status: apiv1.ConditionStatus("True"),
+					},
+					{
+						Type:   clusterv1.ReadyCondition,
+						Status: apiv1.ConditionStatus("True"),
+					},
+				},
+			},
+			machineDeploymentStatus: clusterv1.MachineDeploymentStatus{},
+			skipCNIUpgrade:          true,
+			wantConditions: []anywherev1.Condition{
+				*conditions.FalseCondition(anywherev1.ReadyCondition, anywherev1.ScalingUpReason, clusterv1.ConditionSeverityInfo, "Scaling up worker nodes, 1 expected (0 actual)"),
+				*conditions.TrueCondition(anywherev1.ControlPlaneReadyCondition),
+				*conditions.FalseCondition(anywherev1.DefaultCNIConfiguredCondition, anywherev1.SkipUpgradesForDefaultCNIConfiguredReason, clusterv1.ConditionSeverityWarning, "Configured to skip default Cilium CNI upgrades"),
+				*conditions.FalseCondition(anywherev1.WorkersReadyConditon, anywherev1.ScalingUpReason, clusterv1.ConditionSeverityInfo, "Scaling up worker nodes, 1 expected (0 actual)"),
+				*conditions.TrueCondition(anywherev1.ControlPlaneInitializedCondition),
+			},
+			result: ctrl.Result{Requeue: false, RequeueAfter: 10 * time.Second},
+		},
+		{
+			testName: "cluster ready, skip default cni upgrades",
+			kcpStatus: controlplanev1.KubeadmControlPlaneStatus{
+				ReadyReplicas:   1,
+				Replicas:        1,
+				UpdatedReplicas: 1,
+				Conditions: clusterv1.Conditions{
+					{
+						Type:   controlplanev1.AvailableCondition,
+						Status: apiv1.ConditionStatus("True"),
+					},
+					{
+						Type:   clusterv1.ReadyCondition,
+						Status: apiv1.ConditionStatus("True"),
+					},
+				},
+			},
+			machineDeploymentStatus: clusterv1.MachineDeploymentStatus{
+				ReadyReplicas:   1,
+				Replicas:        1,
+				UpdatedReplicas: 1,
+			},
+			skipCNIUpgrade: true,
+			wantConditions: []anywherev1.Condition{
+				*conditions.TrueCondition(anywherev1.ReadyCondition),
+				*conditions.TrueCondition(anywherev1.ControlPlaneReadyCondition),
+				*conditions.FalseCondition(anywherev1.DefaultCNIConfiguredCondition, anywherev1.SkipUpgradesForDefaultCNIConfiguredReason, clusterv1.ConditionSeverityWarning, "Configured to skip default Cilium CNI upgrades"),
+				*conditions.TrueCondition(anywherev1.WorkersReadyConditon),
+				*conditions.TrueCondition(anywherev1.ControlPlaneInitializedCondition),
+			},
+			result: ctrl.Result{},
+		},
+		{
+			testName: "cluster ready",
+			kcpStatus: controlplanev1.KubeadmControlPlaneStatus{
+				ReadyReplicas:   1,
+				Replicas:        1,
+				UpdatedReplicas: 1,
+				Conditions: clusterv1.Conditions{
+					{
+						Type:   controlplanev1.AvailableCondition,
+						Status: apiv1.ConditionStatus("True"),
+					},
+					{
+						Type:   clusterv1.ReadyCondition,
+						Status: apiv1.ConditionStatus("True"),
+					},
+				},
+			},
+			machineDeploymentStatus: clusterv1.MachineDeploymentStatus{
+				ReadyReplicas:   1,
+				Replicas:        1,
+				UpdatedReplicas: 1,
+			},
+			skipCNIUpgrade: false,
+			wantConditions: []anywherev1.Condition{
+				*conditions.TrueCondition(anywherev1.ReadyCondition),
+				*conditions.TrueCondition(anywherev1.ControlPlaneReadyCondition),
+				*conditions.TrueCondition(anywherev1.DefaultCNIConfiguredCondition),
+				*conditions.TrueCondition(anywherev1.WorkersReadyConditon),
+				*conditions.TrueCondition(anywherev1.ControlPlaneInitializedCondition),
+			},
+			result: ctrl.Result{},
+		},
+	}
+	for _, tt := range testCases {
+		t.Run(tt.testName, func(t *testing.T) {
+			config, bundles := baseTestVsphereCluster()
+			clusterName := "test-cluster"
+			config.Cluster.Name = clusterName
+			config.Cluster.Generation = 2
+			config.Cluster.Status.ObservedGeneration = 1
+			config.Cluster.Spec.ManagementCluster = anywherev1.ManagementCluster{Name: clusterName}
+
+			config.Cluster.Spec.ClusterNetwork.CNIConfig.Cilium.SkipUpgrade = ptr.Bool(tt.skipCNIUpgrade)
+
+			g := NewWithT(t)
+
+			objs := make([]runtime.Object, 0, 4+len(config.ChildObjects()))
+			kcp := test.KubeadmControlPlane(func(kcp *controlplanev1.KubeadmControlPlane) {
+				k := controller.CAPIKubeadmControlPlaneKey(config.Cluster)
+				kcp.Name = k.Name
+				kcp.Namespace = k.Namespace
+				kcp.Status = tt.kcpStatus
+			})
+
+			md1 := test.MachineDeployment(func(md *clusterv1.MachineDeployment) {
+				md.ObjectMeta.Labels = map[string]string{
+					clusterv1.ClusterNameLabel: config.Cluster.Name,
+				}
+				md.Status = tt.machineDeploymentStatus
+			})
+
+			objs = append(objs, config.Cluster, bundles, kcp, md1)
+			for _, o := range config.ChildObjects() {
+				objs = append(objs, o)
+			}
+			testClient := fake.NewClientBuilder().WithRuntimeObjects(objs...).Build()
+
+			mockCtrl := gomock.NewController(t)
+			providerReconciler := mocks.NewMockProviderClusterReconciler(mockCtrl)
+			iam := mocks.NewMockAWSIamConfigReconciler(mockCtrl)
+			clusterValidator := mocks.NewMockClusterValidator(mockCtrl)
+			registry := newRegistryMock(providerReconciler)
+			mockPkgs := mocks.NewMockPackagesClient(mockCtrl)
+
+			ctx := context.Background()
+			log := testr.New(t)
+			logCtx := ctrl.LoggerInto(ctx, log)
+
+			iam.EXPECT().EnsureCASecret(logCtx, log, sameName(config.Cluster)).Return(controller.Result{}, nil)
+			iam.EXPECT().Reconcile(logCtx, log, sameName(config.Cluster)).Return(controller.Result{}, nil)
+
+			providerReconciler.EXPECT().ReconcileWorkerNodes(gomock.Any(), gomock.Any(), gomock.Any()).Times(1)
+
+			r := controllers.NewClusterReconciler(testClient, registry, iam, clusterValidator, mockPkgs)
+
+			result, err := r.Reconcile(logCtx, clusterRequest(config.Cluster))
+
+			g.Expect(err).ToNot(HaveOccurred())
+			g.Expect(result).To(Equal(tt.result))
+
+			api := envtest.NewAPIExpecter(t, testClient)
+			c := envtest.CloneNameNamespace(config.Cluster)
+			api.ShouldEventuallyMatch(logCtx, c, func(g Gomega) {
+				g.Expect(c.Status.ObservedGeneration).To(
+					Equal(c.Generation), "status generation should have been updated to the metadata generation's value",
+				)
+			})
+
+			api.ShouldEventuallyMatch(logCtx, c, func(g Gomega) {
+				for _, wantCondition := range tt.wantConditions {
+					condition := conditions.Get(c, wantCondition.Type)
+					g.Expect(condition).ToNot(BeNil())
+					g.Expect(condition).To((conditions.HaveSameStateOf(&wantCondition)))
+				}
+			})
+		})
+	}
 }
 
 func TestClusterReconcilerReconcileGenerations(t *testing.T) {
@@ -196,6 +667,7 @@ func TestClusterReconcilerReconcileGenerations(t *testing.T) {
 			config, bundles := baseTestVsphereCluster()
 
 			config.Cluster.Generation = tt.clusterGeneration
+			config.Cluster.Status.ObservedGeneration = tt.clusterGeneration
 			config.Cluster.Status.ReconciledGeneration = tt.reconciledGeneration
 			config.Cluster.Status.ReconciledGeneration = tt.reconciledGeneration
 			config.Cluster.Status.ChildrenReconciledGeneration = tt.childReconciledGeneration
@@ -213,13 +685,22 @@ func TestClusterReconcilerReconcileGenerations(t *testing.T) {
 				awsIAM.Generation = tt.awsIAMGeneration
 			}
 
+			kcp := testKubeadmControlPlaneFromCluster(config.Cluster)
+			machineDeployments := machineDeploymentsFromCluster(config.Cluster)
+
 			g := NewWithT(t)
 			ctx := context.Background()
 
-			objs := make([]runtime.Object, 0, 7)
+			objs := make([]runtime.Object, 0, 7+len(machineDeployments))
 			objs = append(objs, config.Cluster, bundles)
 			for _, o := range config.ChildObjects() {
 				objs = append(objs, o)
+			}
+
+			objs = append(objs, kcp)
+
+			for _, obj := range machineDeployments {
+				objs = append(objs, obj.DeepCopy())
 			}
 
 			client := fake.NewClientBuilder().WithRuntimeObjects(objs...).Build()
@@ -271,18 +752,25 @@ func TestClusterReconcilerReconcileSelfManagedClusterWithExperimentalUpgrades(t 
 			BundlesRef: &anywherev1.BundlesRef{
 				Name: "my-bundles-ref",
 			},
+			ClusterNetwork: anywherev1.ClusterNetwork{
+				CNIConfig: &anywherev1.CNIConfig{
+					Cilium: &anywherev1.CiliumConfig{},
+				},
+			},
 		},
 		Status: anywherev1.ClusterStatus{
 			ReconciledGeneration: 1,
 		},
 	}
 
+	kcp := testKubeadmControlPlaneFromCluster(selfManagedCluster)
+
 	controller := gomock.NewController(t)
 	providerReconciler := mocks.NewMockProviderClusterReconciler(controller)
 	iam := mocks.NewMockAWSIamConfigReconciler(controller)
 	clusterValidator := mocks.NewMockClusterValidator(controller)
 	registry := newRegistryMock(providerReconciler)
-	c := fake.NewClientBuilder().WithRuntimeObjects(selfManagedCluster).Build()
+	c := fake.NewClientBuilder().WithRuntimeObjects(selfManagedCluster, kcp).Build()
 	mockPkgs := mocks.NewMockPackagesClient(controller)
 	providerReconciler.EXPECT().Reconcile(ctx, gomock.AssignableToTypeOf(logr.Logger{}), sameName(selfManagedCluster))
 
@@ -302,13 +790,19 @@ func TestClusterReconcilerReconcilePausedCluster(t *testing.T) {
 	cluster := vsphereCluster()
 	cluster.SetManagedBy(managementCluster.Name)
 	capiCluster := newCAPICluster(cluster.Name, cluster.Namespace)
+	kcp := testKubeadmControlPlaneFromCluster(cluster)
+	machineDeployments := machineDeploymentsFromCluster(cluster)
+
+	objs := make([]runtime.Object, 0, 5)
+	objs = append(objs, managementCluster, cluster, capiCluster, kcp)
+	for _, md := range machineDeployments {
+		objs = append(objs, md.DeepCopy())
+	}
 
 	// Mark as paused
 	cluster.PauseReconcile()
 
-	c := fake.NewClientBuilder().WithRuntimeObjects(
-		managementCluster, cluster, capiCluster,
-	).Build()
+	c := fake.NewClientBuilder().WithRuntimeObjects(objs...).Build()
 
 	ctrl := gomock.NewController(t)
 	providerReconciler := mocks.NewMockProviderClusterReconciler(ctrl)
@@ -341,6 +835,11 @@ func TestClusterReconcilerReconcileDeletedSelfManagedCluster(t *testing.T) {
 			BundlesRef: &anywherev1.BundlesRef{
 				Name: "my-bundles-ref",
 			},
+			ClusterNetwork: anywherev1.ClusterNetwork{
+				CNIConfig: &anywherev1.CNIConfig{
+					Cilium: &anywherev1.CiliumConfig{},
+				},
+			},
 		},
 		Status: anywherev1.ClusterStatus{
 			ReconciledGeneration: 1,
@@ -370,6 +869,11 @@ func TestClusterReconcilerReconcileSelfManagedClusterRegAuthFailNoSecret(t *test
 		Spec: anywherev1.ClusterSpec{
 			BundlesRef: &anywherev1.BundlesRef{
 				Name: "my-bundles-ref",
+			},
+			ClusterNetwork: anywherev1.ClusterNetwork{
+				CNIConfig: &anywherev1.CNIConfig{
+					Cilium: &anywherev1.CiliumConfig{},
+				},
 			},
 			RegistryMirrorConfiguration: &anywherev1.RegistryMirrorConfiguration{
 				Authenticate: true,
@@ -441,6 +945,14 @@ func TestClusterReconcilerReconcileDeletePausedCluster(t *testing.T) {
 	cluster.Spec.ManagementCluster = anywherev1.ManagementCluster{Name: "management-cluster"}
 	controllerutil.AddFinalizer(cluster, controllers.ClusterFinalizerName)
 	capiCluster := newCAPICluster(cluster.Name, cluster.Namespace)
+	kcp := testKubeadmControlPlaneFromCluster(cluster)
+	machineDeployments := machineDeploymentsFromCluster(cluster)
+
+	objs := make([]runtime.Object, 0, 5)
+	objs = append(objs, managementCluster, cluster, capiCluster, kcp)
+	for _, md := range machineDeployments {
+		objs = append(objs, md.DeepCopy())
+	}
 
 	// Mark cluster for deletion
 	now := metav1.Now()
@@ -452,9 +964,7 @@ func TestClusterReconcilerReconcileDeletePausedCluster(t *testing.T) {
 	controller := gomock.NewController(t)
 	iam := mocks.NewMockAWSIamConfigReconciler(controller)
 	clusterValidator := mocks.NewMockClusterValidator(controller)
-	c := fake.NewClientBuilder().WithRuntimeObjects(
-		managementCluster, cluster, capiCluster,
-	).Build()
+	c := fake.NewClientBuilder().WithRuntimeObjects(objs...).Build()
 
 	r := controllers.NewClusterReconciler(c, newRegistryForDummyProviderReconciler(), iam, clusterValidator, nil)
 	g.Expect(r.Reconcile(ctx, clusterRequest(cluster))).To(Equal(reconcile.Result{}))
@@ -571,6 +1081,11 @@ func TestClusterReconcilerSkipDontInstallPackagesOnSelfManaged(t *testing.T) {
 				Name:      "my-bundles-ref",
 				Namespace: "my-namespace",
 			},
+			ClusterNetwork: anywherev1.ClusterNetwork{
+				CNIConfig: &anywherev1.CNIConfig{
+					Cilium: &anywherev1.CiliumConfig{},
+				},
+			},
 			ManagementCluster: anywherev1.ManagementCluster{
 				Name: "",
 			},
@@ -608,6 +1123,11 @@ func TestClusterReconcilerDontDeletePackagesOnSelfManaged(t *testing.T) {
 			BundlesRef: &anywherev1.BundlesRef{
 				Name:      "my-bundles-ref",
 				Namespace: "my-namespace",
+			},
+			ClusterNetwork: anywherev1.ClusterNetwork{
+				CNIConfig: &anywherev1.CNIConfig{
+					Cilium: &anywherev1.CiliumConfig{},
+				},
 			},
 			ManagementCluster: anywherev1.ManagementCluster{
 				Name: "",
@@ -649,6 +1169,11 @@ func TestClusterReconcilerPackagesDeletion(s *testing.T) {
 				BundlesRef: &anywherev1.BundlesRef{
 					Name:      "my-bundles-ref",
 					Namespace: "my-namespace",
+				},
+				ClusterNetwork: anywherev1.ClusterNetwork{
+					CNIConfig: &anywherev1.CNIConfig{
+						Cilium: &anywherev1.CiliumConfig{},
+					},
 				},
 				ManagementCluster: anywherev1.ManagementCluster{
 					Name: "my-management-cluster",
@@ -695,6 +1220,11 @@ func TestClusterReconcilerPackagesInstall(s *testing.T) {
 				BundlesRef: &anywherev1.BundlesRef{
 					Name:      "my-bundles-ref",
 					Namespace: "my-namespace",
+				},
+				ClusterNetwork: anywherev1.ClusterNetwork{
+					CNIConfig: &anywherev1.CNIConfig{
+						Cilium: &anywherev1.CiliumConfig{},
+					},
 				},
 				ManagementCluster: anywherev1.ManagementCluster{
 					Name: "my-management-cluster",
@@ -902,6 +1432,11 @@ func vsphereCluster() *anywherev1.Cluster {
 			Namespace: namespace,
 		},
 		Spec: anywherev1.ClusterSpec{
+			ClusterNetwork: anywherev1.ClusterNetwork{
+				CNIConfig: &anywherev1.CNIConfig{
+					Cilium: &anywherev1.CiliumConfig{},
+				},
+			},
 			DatacenterRef: anywherev1.Ref{
 				Kind: "VSphereDatacenterConfig",
 				Name: "datacenter",

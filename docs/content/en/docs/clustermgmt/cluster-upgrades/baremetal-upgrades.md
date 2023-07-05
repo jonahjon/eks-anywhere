@@ -13,7 +13,7 @@ When you run `eksctl anywhere upgrade cluster -f ./cluster.yaml`, EKS Anywhere r
 EKS Anywhere then performs the upgrade, modifying your cluster to match the updated specification. 
 The upgrade command also upgrades core components of EKS Anywhere and lets the user enjoy the latest features, bug fixes and security patches.
 
-**Upgrades should never be run from ephemeral nodes (short-lived systems that spin up and down on a regular basis). If an upgrade fails, it is very important not to delete the Docker containers running the KinD bootstrap cluster. During an upgrade, the bootstrap cluster contains critical EKS Anywhere components. If it is deleted after a failed upgrade, they cannot be recovered.**
+**Upgrades should never be run from ephemeral nodes (short-lived systems that spin up and down on a regular basis). It is highly recommended to run the `upgrade` command with the `--no-timeouts` option when the command is executed through automation. This prevents the CLI from timing out and enables cluster operators to fix issues preventing the upgrade from completing while the process is running. If an upgrade fails, it is very important not to delete the Docker containers running the KinD bootstrap cluster. During an upgrade, the bootstrap cluster contains critical EKS Anywhere components. If it is deleted after a failed upgrade, they cannot be recovered.**
 
 >**_NOTE:_** Currently only Minor Version Upgrades are support for Bare Metal clusters. No other aspects of the cluster upgrades are currently supported.
 >
@@ -188,9 +188,7 @@ and then you will run the [upgrade cluster command]({{< relref "baremetal-upgrad
   >   kubectl apply -f updated-hardware.yaml
   >   ```
   >
-  > *  If you want to update multiple workload clusters, you should update them one by one, and make sure its completely up and running successfully by checking tinkerbell machines, before attempting to update the next workload cluster. Attempting to update multiple workload clusters without letting the requests complete successfully can cause hardware race conditions. In a situation where sufficient hardware is not provisioned, the creation would fail at the CAPT level.
-  > 
-  >  This also applied to sending upgrade requests to the same workload cluster.
+  > *  If you want to upgrade multiple workload clusters, make sure that the spare hardware that is available for new nodes to rollout has labels unique to the workload cluster you are trying to upgrade. For instance, for an EKSA cluster named `eksa-workload1`, the hardware that is assigned for this cluster should have labels that are only going to be used for this cluster like `type=eksa-workload1-cp` and `type=eksa-workload1-worker`. Another workload cluster named `eksa-workload2` can have labels like `type=eksa-workload2-cp` and `type=eksa-workload2-worker`. Please note that even though labels can be arbitrary, they need to be unique for each workload cluster. Not specifying unique cluster labels can cause cluster upgrades to behave in unexpected ways which may lead to unsuccessful upgrades and unstable clusters.
 
 * **eksctl CLI**: To upgrade a workload cluster with eksctl, run:
 
