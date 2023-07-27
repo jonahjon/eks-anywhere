@@ -26,7 +26,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/version"
-	cloudstackv1 "sigs.k8s.io/cluster-api-provider-cloudstack/api/v1beta1"
+	cloudstackv1 "sigs.k8s.io/cluster-api-provider-cloudstack/api/v1beta3"
 	vspherev1 "sigs.k8s.io/cluster-api-provider-vsphere/api/v1beta1"
 	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
 	controlplanev1 "sigs.k8s.io/cluster-api/controlplane/kubeadm/api/v1beta1"
@@ -989,9 +989,9 @@ func (k *Kubectl) ValidatePods(ctx context.Context, kubeconfig string) error {
 	return nil
 }
 
-// RunBusyBoxPod will run Kubectl run with a busybox curl image and the command you pass in.
-func (k *Kubectl) RunBusyBoxPod(ctx context.Context, namespace, name, kubeconfig string, command []string) (string, error) {
-	params := []string{"run", name, "--image=yauritux/busybox-curl", "-o", "json", "--kubeconfig", kubeconfig, "--namespace", namespace, "--restart=Never"}
+// RunCurlPod will run Kubectl with an image (with curl installed) and the command you pass in.
+func (k *Kubectl) RunCurlPod(ctx context.Context, namespace, name, kubeconfig string, command []string) (string, error) {
+	params := []string{"run", name, "--image=public.ecr.aws/eks-anywhere/diagnostic-collector:v0.16.2-eks-a-41", "-o", "json", "--kubeconfig", kubeconfig, "--namespace", namespace, "--restart=Never"}
 	params = append(params, command...)
 	_, err := k.Execute(ctx, params...)
 	if err != nil {

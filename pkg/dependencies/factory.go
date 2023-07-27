@@ -16,6 +16,7 @@ import (
 	"github.com/aws/eks-anywhere/pkg/aws"
 	"github.com/aws/eks-anywhere/pkg/awsiamauth"
 	"github.com/aws/eks-anywhere/pkg/bootstrapper"
+	"github.com/aws/eks-anywhere/pkg/cli"
 	"github.com/aws/eks-anywhere/pkg/clients/kubernetes"
 	"github.com/aws/eks-anywhere/pkg/cluster"
 	"github.com/aws/eks-anywhere/pkg/clusterapi"
@@ -83,7 +84,6 @@ type Dependencies struct {
 	Git                         *gitfactory.GitTools
 	EksdInstaller               *eksd.Installer
 	EksdUpgrader                *eksd.Upgrader
-	KubeProxyCLIUpgrader        clustermanager.KubeProxyCLIUpgrader
 	AnalyzerFactory             diagnostics.AnalyzerFactory
 	CollectorFactory            diagnostics.CollectorFactory
 	DignosticCollectorFactory   diagnostics.DiagnosticBundleFactory
@@ -92,6 +92,7 @@ type Dependencies struct {
 	ManifestReader              *manifests.Reader
 	closers                     []types.Closer
 	CliConfig                   *cliconfig.CliConfig
+	CreateCliConfig             *cliconfig.CreateClusterCLIConfig
 	PackageInstaller            interfaces.PackageInstaller
 	BundleRegistry              curatedpackages.BundleRegistry
 	PackageControllerClient     *curatedpackages.PackageControllerClient
@@ -104,6 +105,7 @@ type Dependencies struct {
 	SnowValidator               *snow.Validator
 	IPValidator                 *validator.IPValidator
 	UnAuthKubectlClient         KubeClients
+	CreateClusterDefaulter      cli.CreateClusterDefaulter
 }
 
 // KubeClients defines super struct that exposes all behavior.
@@ -124,13 +126,14 @@ func (d *Dependencies) Close(ctx context.Context) error {
 }
 
 func ForSpec(ctx context.Context, clusterSpec *cluster.Spec) *Factory {
-	eksaToolsImage := clusterSpec.VersionsBundle.Eksa.CliTools
+	versionsBundle := clusterSpec.ControlPlaneVersionsBundle()
+	eksaToolsImage := versionsBundle.Eksa.CliTools
 	return NewFactory().
 		UseExecutableImage(eksaToolsImage.VersionedImage()).
 		WithRegistryMirror(registrymirror.FromCluster(clusterSpec.Cluster)).
 		UseProxyConfiguration(clusterSpec.Cluster.ProxyConfiguration()).
 		WithWriterFolder(clusterSpec.Cluster.Name).
-		WithDiagnosticCollectorImage(clusterSpec.VersionsBundle.Eksa.DiagnosticCollector.VersionedImage())
+		WithDiagnosticCollectorImage(versionsBundle.Eksa.DiagnosticCollector.VersionedImage())
 }
 
 // Factory helps initialization.
@@ -376,12 +379,13 @@ func (f *Factory) WithExecutableBuilder() *Factory {
 	return f
 }
 
-func (f *Factory) WithProvider(clusterConfigFile string, clusterConfig *v1alpha1.Cluster, skipIpCheck bool, hardwareCSVPath string, force bool, tinkerbellBootstrapIp string) *Factory {
+// WithProvider initializes the provider dependency and adds to the build steps.
+func (f *Factory) WithProvider(clusterConfigFile string, clusterConfig *v1alpha1.Cluster, skipIPCheck bool, hardwareCSVPath string, force bool, tinkerbellBootstrapIP string, skippedValidations map[string]bool) *Factory { // nolint:gocyclo
 	switch clusterConfig.Spec.DatacenterRef.Kind {
 	case v1alpha1.VSphereDatacenterKind:
 		f.WithKubectl().WithGovc().WithWriter().WithIPValidator()
 	case v1alpha1.CloudStackDatacenterKind:
-		f.WithKubectl().WithCloudStackValidatorRegistry(skipIpCheck).WithWriter()
+		f.WithKubectl().WithCloudStackValidatorRegistry(skipIPCheck).WithWriter()
 	case v1alpha1.DockerDatacenterKind:
 		f.WithDocker().WithKubectl()
 	case v1alpha1.TinkerbellDatacenterKind:
@@ -416,7 +420,8 @@ func (f *Factory) WithProvider(clusterConfigFile string, clusterConfig *v1alpha1
 				f.dependencies.Writer,
 				f.dependencies.IPValidator,
 				time.Now,
-				skipIpCheck,
+				skipIPCheck,
+				skippedValidations,
 			)
 
 		case v1alpha1.CloudStackDatacenterKind:
@@ -439,7 +444,7 @@ func (f *Factory) WithProvider(clusterConfigFile string, clusterConfig *v1alpha1
 			f.dependencies.Provider = snow.NewProvider(
 				f.dependencies.UnAuthKubeClient,
 				f.dependencies.SnowConfigManager,
-				skipIpCheck,
+				skipIPCheck,
 			)
 
 		case v1alpha1.TinkerbellDatacenterKind:
@@ -453,16 +458,16 @@ func (f *Factory) WithProvider(clusterConfigFile string, clusterConfig *v1alpha1
 				return fmt.Errorf("unable to get machine config from file %s: %v", clusterConfigFile, err)
 			}
 
-			tinkerbellIp := tinkerbellBootstrapIp
-			if tinkerbellIp == "" {
+			tinkerbellIP := tinkerbellBootstrapIP
+			if tinkerbellIP == "" {
 				logger.V(4).Info("Inferring local Tinkerbell Bootstrap IP from environment")
 				localIp, err := networkutils.GetLocalIP()
 				if err != nil {
 					return err
 				}
-				tinkerbellIp = localIp.String()
+				tinkerbellIP = localIp.String()
 			}
-			logger.V(4).Info("Tinkerbell IP", "tinkerbell-ip", tinkerbellIp)
+			logger.V(4).Info("Tinkerbell IP", "tinkerbell-ip", tinkerbellIP)
 
 			provider, err := tinkerbell.NewProvider(
 				datacenterConfig,
@@ -473,10 +478,10 @@ func (f *Factory) WithProvider(clusterConfigFile string, clusterConfig *v1alpha1
 				f.dependencies.DockerClient,
 				f.dependencies.Helm,
 				f.dependencies.Kubectl,
-				tinkerbellIp,
+				tinkerbellIP,
 				time.Now,
 				force,
-				skipIpCheck,
+				skipIPCheck,
 			)
 			if err != nil {
 				return err
@@ -521,7 +526,7 @@ func (f *Factory) WithProvider(clusterConfigFile string, clusterConfig *v1alpha1
 				crypto.NewTlsValidator(),
 				httpClient,
 				time.Now,
-				skipIpCheck,
+				skipIPCheck,
 			)
 			f.dependencies.Provider = provider
 		default:
@@ -949,7 +954,7 @@ func (f *Factory) clusterManagerOpts(timeoutOpts *ClusterManagerTimeoutOptions) 
 
 // WithClusterManager builds a cluster manager based on the cluster config and timeout options.
 func (f *Factory) WithClusterManager(clusterConfig *v1alpha1.Cluster, timeoutOpts *ClusterManagerTimeoutOptions) *Factory {
-	f.WithClusterctl().WithKubectl().WithNetworking(clusterConfig).WithWriter().WithDiagnosticBundleFactory().WithAwsIamAuth().WithFileReader()
+	f.WithClusterctl().WithKubectl().WithNetworking(clusterConfig).WithWriter().WithDiagnosticBundleFactory().WithAwsIamAuth().WithFileReader().WithUnAuthKubeClient()
 
 	f.buildSteps = append(f.buildSteps, func(ctx context.Context) error {
 		if f.dependencies.ClusterManager != nil {
@@ -974,6 +979,7 @@ func (f *Factory) WithClusterManager(clusterConfig *v1alpha1.Cluster, timeoutOpt
 		installer := clustermanager.NewEKSAInstaller(client, f.dependencies.FileReader, f.eksaInstallerOpts()...)
 
 		f.dependencies.ClusterManager = clustermanager.New(
+			f.dependencies.UnAuthKubeClient,
 			client,
 			f.dependencies.Networking,
 			f.dependencies.Writer,
@@ -1001,6 +1007,21 @@ func (f *Factory) WithNoTimeouts() *Factory {
 // WithCliConfig builds a cli config.
 func (f *Factory) WithCliConfig(cliConfig *cliconfig.CliConfig) *Factory {
 	f.dependencies.CliConfig = cliConfig
+	return f
+}
+
+// WithCreateClusterDefaulter builds a create cluster defaulter that builds defaulter dependencies specific to the create cluster command. The defaulter is then run once the factory is built in the create cluster command.
+func (f *Factory) WithCreateClusterDefaulter(createCliConfig cliconfig.CreateClusterCLIConfig) *Factory {
+	f.buildSteps = append(f.buildSteps, func(ctx context.Context) error {
+		controlPlaneIPCheckAnnotationDefaulter := cluster.NewControlPlaneIPCheckAnnotationDefaulter(createCliConfig.SkipCPIPCheck)
+
+		createClusterDefaulter := cli.NewCreateClusterDefaulter(controlPlaneIPCheckAnnotationDefaulter)
+
+		f.dependencies.CreateClusterDefaulter = createClusterDefaulter
+
+		return nil
+	})
+
 	return f
 }
 
@@ -1057,26 +1078,6 @@ func (f *Factory) WithEksdUpgrader() *Factory {
 		return nil
 	})
 
-	return f
-}
-
-// WithKubeProxyCLIUpgrader builds a KubeProxyCLIUpgrader.
-func (f *Factory) WithKubeProxyCLIUpgrader() *Factory {
-	f.WithLogger().WithUnAuthKubeClient()
-
-	f.buildSteps = append(f.buildSteps, func(ctx context.Context) error {
-		var opts []clustermanager.KubeProxyCLIUpgraderOpt
-		if f.config.noTimeouts {
-			opts = append(opts, clustermanager.KubeProxyCLIUpgraderRetrier(*retrier.NewWithNoTimeout()))
-		}
-
-		f.dependencies.KubeProxyCLIUpgrader = clustermanager.NewKubeProxyCLIUpgrader(
-			f.dependencies.Logger,
-			f.dependencies.UnAuthKubeClient,
-			opts...,
-		)
-		return nil
-	})
 	return f
 }
 
@@ -1193,20 +1194,35 @@ func (f *Factory) WithPackageControllerClient(spec *cluster.Spec, kubeConfig str
 
 		httpProxy, httpsProxy, noProxy := getProxyConfiguration(spec)
 		eksaAccessKeyID, eksaSecretKey, eksaRegion := os.Getenv(cliconfig.EksaAccessKeyIdEnv), os.Getenv(cliconfig.EksaSecretAccessKeyEnv), os.Getenv(cliconfig.EksaRegionEnv)
+
+		eksaAwsConfig := ""
+		p := os.Getenv(cliconfig.EksaAwsConfigFileEnv)
+		if p != "" {
+			b, err := os.ReadFile(p)
+			if err != nil {
+				return err
+			}
+			eksaAwsConfig = string(b)
+		}
 		writer, err := filewriter.NewWriter(spec.Cluster.Name)
 		if err != nil {
 			return err
+		}
+		bundle := spec.ControlPlaneVersionsBundle()
+		if bundle == nil {
+			return fmt.Errorf("could not find VersionsBundle")
 		}
 		f.dependencies.PackageControllerClient = curatedpackages.NewPackageControllerClient(
 			f.dependencies.Helm,
 			f.dependencies.Kubectl,
 			spec.Cluster.Name,
 			mgmtKubeConfig,
-			&spec.VersionsBundle.PackageController.HelmChart,
+			&bundle.PackageController.HelmChart,
 			f.registryMirror,
 			curatedpackages.WithEksaAccessKeyId(eksaAccessKeyID),
 			curatedpackages.WithEksaSecretAccessKey(eksaSecretKey),
 			curatedpackages.WithEksaRegion(eksaRegion),
+			curatedpackages.WithEksaAwsConfig(eksaAwsConfig),
 			curatedpackages.WithHTTPProxy(httpProxy),
 			curatedpackages.WithHTTPSProxy(httpsProxy),
 			curatedpackages.WithNoProxy(noProxy),

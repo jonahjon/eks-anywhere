@@ -103,7 +103,11 @@ func (c clusterOptions) mountDirs() []string {
 }
 
 func readClusterSpec(clusterConfigPath string, cliVersion version.Info, opts ...cluster.FileSpecBuilderOpt) (*cluster.Spec, error) {
-	b := cluster.NewFileSpecBuilder(files.NewReader(), cliVersion, opts...)
+	b := cluster.NewFileSpecBuilder(
+		files.NewReader(files.WithEKSAUserAgent("cli", cliVersion.GitVersion)),
+		cliVersion,
+		opts...,
+	)
 	return b.Build(clusterConfigPath)
 }
 
@@ -160,6 +164,13 @@ func buildCliConfig(clusterSpec *cluster.Spec) *config.CliConfig {
 	}
 
 	return cliConfig
+}
+
+func buildCreateCliConfig(clusterOptions *createClusterOptions) config.CreateClusterCLIConfig {
+	createCliConfig := config.CreateClusterCLIConfig{}
+	createCliConfig.SkipCPIPCheck = clusterOptions.skipIpCheck
+
+	return createCliConfig
 }
 
 func getManagementCluster(clusterSpec *cluster.Spec) *types.Cluster {

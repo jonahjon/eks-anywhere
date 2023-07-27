@@ -4014,6 +4014,11 @@ spec:
                       description: Count defines the number of desired worker nodes.
                         Defaults to 1.
                       type: integer
+                    kubernetesVersion:
+                      description: KuberenetesVersion defines the version for worker
+                        nodes. If not set, the top level spec kubernetesVersion will
+                        be used.
+                      type: string
                     labels:
                       additionalProperties:
                         type: string
@@ -4166,6 +4171,10 @@ spec:
               failureMessage:
                 description: Descriptive message about a fatal problem while reconciling
                   a cluster
+                type: string
+              failureReason:
+                description: Machine readable value about a terminal problem while
+                  reconciling the cluster set at the same time as failureMessage
                 type: string
               observedGeneration:
                 description: ObservedGeneration is the latest generation observed
@@ -6145,14 +6154,6 @@ rules:
   - patch
   - update
 - apiGroups:
-  - anywhere.eks.amazonaws.com
-  resources:
-  - eksareleases
-  verbs:
-  - get
-  - list
-  - watch
-- apiGroups:
   - packages.eks.amazonaws.com
   resources:
   - packagebundlecontrollers
@@ -6273,6 +6274,14 @@ rules:
   - anywhere.eks.amazonaws.com
   resources:
   - bundles
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - anywhere.eks.amazonaws.com
+  resources:
+  - eksareleases
   verbs:
   - get
   - list

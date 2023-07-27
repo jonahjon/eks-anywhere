@@ -3,7 +3,6 @@ package v1alpha1
 import (
 	"fmt"
 	"net"
-	"strconv"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -12,6 +11,7 @@ import (
 
 	"github.com/aws/eks-anywhere/pkg/logger"
 	"github.com/aws/eks-anywhere/pkg/semver"
+	"github.com/aws/eks-anywhere/pkg/utils/ptr"
 )
 
 const (
@@ -32,6 +32,9 @@ const (
 
 	// etcdAnnotation can be applied to EKS-A machineconfig CR for etcd, to prevent controller from making changes to it.
 	etcdAnnotation = "anywhere.eks.amazonaws.com/etcd"
+
+	// skipIPCheckAnnotation skips the availability control plane IP validation during cluster creation. Use only if your network configuration is conflicting with the default port scan.
+	skipIPCheckAnnotation = "anywhere.eks.amazonaws.com/skip-ip-check"
 
 	// managementAnnotation points to the name of a management cluster
 	// cluster object.
@@ -402,45 +405,67 @@ type WorkerNodeGroupConfiguration struct {
 	// UpgradeRolloutStrategy determines the rollout strategy to use for rolling upgrades
 	// and related parameters/knobs
 	UpgradeRolloutStrategy *WorkerNodesUpgradeRolloutStrategy `json:"upgradeRolloutStrategy,omitempty"`
+	// KuberenetesVersion defines the version for worker nodes. If not set, the top level spec kubernetesVersion will be used.
+	KubernetesVersion *KubernetesVersion `json:"kubernetesVersion,omitempty"`
 }
 
-func generateWorkerNodeGroupKey(c WorkerNodeGroupConfiguration) (key string) {
-	key = c.Name
-	if c.MachineGroupRef != nil {
-		key += c.MachineGroupRef.Kind + c.MachineGroupRef.Name
+// Equal compares two WorkerNodeGroupConfigurations.
+func (w WorkerNodeGroupConfiguration) Equal(other WorkerNodeGroupConfiguration) bool {
+	return w.Name == other.Name &&
+		intPtrEqual(w.Count, other.Count) &&
+		w.AutoScalingConfiguration.Equal(other.AutoScalingConfiguration) &&
+		w.MachineGroupRef.Equal(other.MachineGroupRef) &&
+		w.KubernetesVersion.Equal(other.KubernetesVersion) &&
+		TaintsSliceEqual(w.Taints, other.Taints) &&
+		MapEqual(w.Labels, other.Labels) &&
+		w.UpgradeRolloutStrategy.Equal(other.UpgradeRolloutStrategy)
+}
+
+// Equal compares two KubernetesVersions.
+func (k *KubernetesVersion) Equal(other *KubernetesVersion) bool {
+	if k == other {
+		return true
 	}
-	if c.AutoScalingConfiguration != nil {
-		key += "autoscaling" + strconv.Itoa(c.AutoScalingConfiguration.MaxCount) + strconv.Itoa(c.AutoScalingConfiguration.MinCount)
+
+	if k == nil || other == nil {
+		return false
 	}
-	if c.Count == nil {
-		return "nil" + key
+
+	return *k == *other
+}
+
+func intPtrEqual(a, b *int) bool {
+	if a == b {
+		return true
 	}
-	return strconv.Itoa(*c.Count) + key
+
+	if a == nil || b == nil {
+		return false
+	}
+
+	return *a == *b
 }
 
 func WorkerNodeGroupConfigurationsSliceEqual(a, b []WorkerNodeGroupConfiguration) bool {
 	if len(a) != len(b) {
 		return false
 	}
-	m := make(map[string]int, len(a))
-	for _, v := range a {
-		m[generateWorkerNodeGroupKey(v)]++
+
+	m := make(map[string]WorkerNodeGroupConfiguration, len(a))
+	for _, w := range a {
+		m[w.Name] = w
 	}
-	for _, v := range b {
-		k := generateWorkerNodeGroupKey(v)
-		if _, ok := m[k]; !ok {
+	for _, wb := range b {
+		wa, ok := m[wb.Name]
+		if !ok {
 			return false
 		}
-		m[k] -= 1
-		if m[k] == 0 {
-			delete(m, k)
+		if !wb.Equal(wa) {
+			return false
 		}
 	}
-	if len(m) != 0 {
-		return false
-	}
 
-	return WorkerNodeGroupConfigurationSliceTaintsEqual(a, b) && WorkerNodeGroupConfigurationsLabelsMapEqual(a, b)
+	return true
 }
 
 func WorkerNodeGroupConfigurationSliceTaintsEqual(a, b []WorkerNodeGroupConfiguration) bool {
@@ -483,6 +508,21 @@ func WorkerNodeGroupConfigurationsLabelsMapEqual(a, b []WorkerNodeGroupConfigura
 		}
 	}
 	return true
+}
+
+// WorkerNodeGroupConfigurationKubeVersionUnchanged checks if a worker node group's k8s version has not changed. The ClusterVersions are the top level kubernetes version of a cluster.
+func WorkerNodeGroupConfigurationKubeVersionUnchanged(o, n *WorkerNodeGroupConfiguration, oldCluster, newCluster *Cluster) bool {
+	oldVersion := o.KubernetesVersion
+	newVersion := n.KubernetesVersion
+
+	if oldVersion == nil {
+		oldVersion = &oldCluster.Spec.KubernetesVersion
+	}
+	if newVersion == nil {
+		newVersion = &newCluster.Spec.KubernetesVersion
+	}
+
+	return newVersion.Equal(oldVersion)
 }
 
 type ClusterNetwork struct {
@@ -832,11 +872,54 @@ var validCiliumPolicyEnforcementModes = map[CiliumPolicyEnforcementMode]bool{
 	CiliumPolicyModeNever:   true,
 }
 
+// FailureReasonType is a type for defining failure reasons.
+type FailureReasonType string
+
+// Reasons for the terminal failures while reconciling the Cluster object.
+const (
+	// MissingDependentObjectsReason reports that the Cluster is missing dependent objects.
+	MissingDependentObjectsReason FailureReasonType = "MissingDependentObjects"
+
+	// ManagementClusterRefInvalidReason reports that the Cluster management cluster reference is invalid. This
+	// can whether if it does not exist or the cluster referenced is not a management cluster.
+	ManagementClusterRefInvalidReason FailureReasonType = "ManagementClusterRefInvalid"
+
+	// ClusterInvalidReason reports that the Cluster spec validation has failed.
+	ClusterInvalidReason FailureReasonType = "ClusterInvalid"
+
+	// DatacenterConfigInvalidReason reports that the Cluster datacenterconfig validation has failed.
+	DatacenterConfigInvalidReason FailureReasonType = "DatacenterConfigInvalid"
+
+	// MachineConfigInvalidReason reports that the Cluster machineconfig validation has failed.
+	MachineConfigInvalidReason FailureReasonType = "MachineConfigInvalid"
+
+	// UnavailableControlPlaneIPReason reports that the Cluster controlPlaneIP is already in use.
+	UnavailableControlPlaneIPReason FailureReasonType = "UnavailableControlPlaneIP"
+
+	// EksaVersionInvalidReason reports that the Cluster eksaVersion validation has failed.
+	EksaVersionInvalidReason FailureReasonType = "EksaVersionInvalid"
+)
+
+// Reasons for the terminal failures while reconciling the Cluster object specific for Tinkerbell.
+const (
+	// HardwareInvalidReason reports that the hardware validation has failed.
+	HardwareInvalidReason FailureReasonType = "HardwareInvalid"
+
+	// MachineInvalidReason reports that the baremetal machine validation has failed.
+	MachineInvalidReason FailureReasonType = "MachineInvalid"
+)
+
 // ClusterStatus defines the observed state of Cluster.
 type ClusterStatus struct {
 	// Descriptive message about a fatal problem while reconciling a cluster
 	// +optional
 	FailureMessage *string `json:"failureMessage,omitempty"`
+
+	// Machine readable value about a terminal problem while reconciling the cluster
+	// set at the same time as failureMessage
+	// +optional
+	FailureReason *FailureReasonType `json:"failureReason,omitempty"`
+
 	// EksdReleaseRef defines the properties of the EKS-D object on the cluster
 	EksdReleaseRef *EksdReleaseRef `json:"eksdReleaseRef,omitempty"`
 	// +optional
@@ -1089,6 +1172,19 @@ type AutoScalingConfiguration struct {
 	MaxCount int `json:"maxCount,omitempty"`
 }
 
+// Equal compares two AutoScalingConfigurations.
+func (a *AutoScalingConfiguration) Equal(other *AutoScalingConfiguration) bool {
+	if a == other {
+		return true
+	}
+
+	if a == nil || other == nil {
+		return false
+	}
+
+	return a.MaxCount == other.MaxCount && a.MinCount == other.MinCount
+}
+
 // ControlPlaneUpgradeRolloutStrategy indicates rollout strategy for cluster.
 type ControlPlaneUpgradeRolloutStrategy struct {
 	Type          string                          `json:"type,omitempty"`
@@ -1104,6 +1200,19 @@ type ControlPlaneRollingUpdateParams struct {
 type WorkerNodesUpgradeRolloutStrategy struct {
 	Type          string                         `json:"type,omitempty"`
 	RollingUpdate WorkerNodesRollingUpdateParams `json:"rollingUpdate,omitempty"`
+}
+
+// Equal compares two WorkerNodesUpgradeRolloutStrategies.
+func (w *WorkerNodesUpgradeRolloutStrategy) Equal(other *WorkerNodesUpgradeRolloutStrategy) bool {
+	if w == other {
+		return true
+	}
+
+	if w == nil || other == nil {
+		return false
+	}
+
+	return w.Type == other.Type && w.RollingUpdate == other.RollingUpdate
 }
 
 // WorkerNodesRollingUpdateParams is API for rolling update strategy knobs.
@@ -1154,6 +1263,22 @@ func (c *Cluster) PausedAnnotation() string {
 
 func (c *Cluster) ControlPlaneAnnotation() string {
 	return controlPlaneAnnotation
+}
+
+// DisableControlPlaneIPCheck sets the `skip-ip-check` annotation on the Cluster object.
+func (c *Cluster) DisableControlPlaneIPCheck() {
+	if c.Annotations == nil {
+		c.Annotations = make(map[string]string, 1)
+	}
+	c.Annotations[skipIPCheckAnnotation] = "true"
+}
+
+// ControlPlaneIPCheckDisabled checks it the `skip-ip-check` annotation is set on the Cluster object.
+func (c *Cluster) ControlPlaneIPCheckDisabled() bool {
+	if s, ok := c.Annotations[skipIPCheckAnnotation]; ok {
+		return s == "true"
+	}
+	return false
 }
 
 func (c *Cluster) ResourceType() string {
@@ -1209,6 +1334,37 @@ func (c *Cluster) MachineConfigRefs() []Ref {
 	}
 
 	return machineConfigRefMap.toSlice()
+}
+
+// SetFailure sets the failureMessage and failureReason of the Cluster status.
+func (c *Cluster) SetFailure(failureReason FailureReasonType, failureMessage string) {
+	c.Status.FailureMessage = ptr.String(failureMessage)
+	c.Status.FailureReason = &failureReason
+}
+
+// ClearFailure clears the failureMessage and failureReason of the Cluster status by setting them to nil.
+func (c *Cluster) ClearFailure() {
+	c.Status.FailureMessage = nil
+	c.Status.FailureReason = nil
+}
+
+// KubernetesVersions returns a set of all unique k8s versions specified in the cluster
+// for both CP and workers.
+func (c *Cluster) KubernetesVersions() []KubernetesVersion {
+	versionsSet := map[string]struct{}{}
+	versions := make([]KubernetesVersion, 0, 1)
+
+	versionsSet[string(c.Spec.KubernetesVersion)] = struct{}{}
+	versions = append(versions, c.Spec.KubernetesVersion)
+	for _, w := range c.Spec.WorkerNodeGroupConfigurations {
+		if w.KubernetesVersion != nil {
+			if _, ok := versionsSet[string(*w.KubernetesVersion)]; !ok {
+				versions = append(versions, *w.KubernetesVersion)
+			}
+		}
+	}
+
+	return versions
 }
 
 type refSet map[Ref]struct{}

@@ -502,11 +502,18 @@ func (v *VSphere) ClusterConfigUpdates() []api.ClusterConfigFiller {
 
 // WithKubeVersionAndOS returns a cluster config filler that sets the cluster kube version and the right template for all
 // vsphere machine configs.
-func (v *VSphere) WithKubeVersionAndOS(osFamily anywherev1.OSFamily, kubeVersion anywherev1.KubernetesVersion) api.ClusterConfigFiller {
+func (v *VSphere) WithKubeVersionAndOS(osFamily anywherev1.OSFamily, kubeVersion anywherev1.KubernetesVersion, release *releasev1.EksARelease) api.ClusterConfigFiller {
+	var template string
+	if release == nil {
+		template = v.templateForDevRelease(osFamily, kubeVersion)
+	} else {
+		template = v.templatesRegistry.templateForRelease(v.t, osFamily, release, kubeVersion)
+	}
+
 	return api.JoinClusterConfigFillers(
 		api.ClusterToConfigFiller(api.WithKubernetesVersion(kubeVersion)),
 		api.VSphereToConfigFiller(
-			api.WithTemplateForAllMachines(v.templateForDevRelease(osFamily, kubeVersion)),
+			api.WithTemplateForAllMachines(template),
 			api.WithOsFamilyForAllMachines(osFamily),
 		),
 	)
@@ -588,6 +595,11 @@ func (v *VSphere) Bottlerocket127Template() api.VSphereFiller {
 	return api.WithTemplateForAllMachines(v.templateForDevRelease(anywherev1.Bottlerocket, anywherev1.Kube127))
 }
 
+// Redhat127Template returns vsphere filler for 1.27 Redhat.
+func (v *VSphere) Redhat127Template() api.VSphereFiller {
+	return api.WithTemplateForAllMachines(v.templateForDevRelease(anywherev1.RedHat, anywherev1.Kube127))
+}
+
 func (v *VSphere) getDevRelease() *releasev1.EksARelease {
 	v.t.Helper()
 	if v.devRelease == nil {
@@ -648,6 +660,11 @@ func WithUbuntuForRelease(release *releasev1.EksARelease, kubeVersion anywherev1
 
 func WithBottlerocketFromRelease(release *releasev1.EksARelease, kubeVersion anywherev1.KubernetesVersion) VSphereOpt {
 	return optionToSetTemplateForRelease(anywherev1.Bottlerocket, release, kubeVersion)
+}
+
+// WithRedhatForRelease sets the redhat template for the given release.
+func WithRedhatForRelease(release *releasev1.EksARelease, kubeVersion anywherev1.KubernetesVersion) VSphereOpt {
+	return optionToSetTemplateForRelease(anywherev1.RedHat, release, kubeVersion)
 }
 
 func (v *VSphere) WithBottleRocketForRelease(release *releasev1.EksARelease, kubeVersion anywherev1.KubernetesVersion) api.ClusterConfigFiller {

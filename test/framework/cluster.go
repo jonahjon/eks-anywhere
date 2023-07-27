@@ -42,6 +42,7 @@ import (
 	"github.com/aws/eks-anywhere/pkg/semver"
 	"github.com/aws/eks-anywhere/pkg/templater"
 	"github.com/aws/eks-anywhere/pkg/types"
+	releasev1 "github.com/aws/eks-anywhere/release/api/v1alpha1"
 	clusterf "github.com/aws/eks-anywhere/test/framework/cluster"
 )
 
@@ -318,7 +319,7 @@ type Provider interface {
 	CleanupVMs(clusterName string) error
 	UpdateKubeConfig(content *[]byte, clusterName string) error
 	ClusterStateValidations() []clusterf.StateValidation
-	WithKubeVersionAndOS(osFamily v1alpha1.OSFamily, kubeVersion v1alpha1.KubernetesVersion) api.ClusterConfigFiller
+	WithKubeVersionAndOS(osFamily v1alpha1.OSFamily, kubeVersion v1alpha1.KubernetesVersion, release *releasev1.EksARelease) api.ClusterConfigFiller
 	WithNewWorkerNodeGroup(name string, workerNodeGroup *WorkerNodeGroup) api.ClusterConfigFiller
 }
 
@@ -2055,26 +2056,26 @@ func (e *ClusterE2ETest) ApplyPackageFile(packageName string, targetNamespace st
 	time.Sleep(30 * time.Second) // Add sleep to allow package to change state
 }
 
-// CurlEndpointByBusyBox creates a busybox pod with command to curl the target endpoint,
-// and returns the created busybox pod name.
-func (e *ClusterE2ETest) CurlEndpointByBusyBox(endpoint string, namespace string) string {
+// CurlEndpoint creates a pod with command to curl the target endpoint,
+// and returns the created pod name.
+func (e *ClusterE2ETest) CurlEndpoint(endpoint string, namespace string) string {
 	ctx := context.Background()
 
-	e.T.Log("Launching Busybox pod to curl endpoint", endpoint)
-	randomname := fmt.Sprintf("%s-%s", "busybox-test", utilrand.String(7))
-	busyBoxPodName, err := e.KubectlClient.RunBusyBoxPod(context.TODO(),
+	e.T.Log("Launching pod to curl endpoint", endpoint)
+	randomname := fmt.Sprintf("%s-%s", "curl-test", utilrand.String(7))
+	curlPodName, err := e.KubectlClient.RunCurlPod(context.TODO(),
 		namespace, randomname, e.KubeconfigFilePath(), []string{"curl", endpoint})
 	if err != nil {
-		e.T.Fatalf("error launching busybox pod: %s", err)
+		e.T.Fatalf("error launching pod: %s", err)
 	}
 
 	err = e.KubectlClient.WaitForPodCompleted(ctx,
-		e.Cluster(), busyBoxPodName, "5m", namespace)
+		e.Cluster(), curlPodName, "5m", namespace)
 	if err != nil {
-		e.T.Fatalf("waiting for busybox pod %s timed out: %s", busyBoxPodName, err)
+		e.T.Fatalf("waiting for pod %s timed out: %s", curlPodName, err)
 	}
 
-	return busyBoxPodName
+	return curlPodName
 }
 
 // MatchLogs matches the log from a container to the expected content. Given it
@@ -2107,8 +2108,8 @@ func (e *ClusterE2ETest) MatchLogs(targetNamespace string, targetPodName string,
 
 // ValidateEndpointContent validates the contents at the target endpoint.
 func (e *ClusterE2ETest) ValidateEndpointContent(endpoint string, namespace string, expectedContent string) {
-	busyBoxPodName := e.CurlEndpointByBusyBox(endpoint, namespace)
-	e.MatchLogs(namespace, busyBoxPodName, busyBoxPodName, expectedContent, 5*time.Minute)
+	curlPodName := e.CurlEndpoint(endpoint, namespace)
+	e.MatchLogs(namespace, curlPodName, curlPodName, expectedContent, 5*time.Minute)
 }
 
 // AirgapDockerContainers airgap docker containers. Outside network should not be reached during airgapped deployment.
@@ -2207,7 +2208,7 @@ func (e *ClusterE2ETest) CreateCloudStackCredentialsSecretFromEnvVar(name string
 
 	secretContent, err := yaml.Marshal(secret)
 	if err != nil {
-		e.T.Fatalf("error mashalling credentials secret : %v", err)
+		e.T.Fatalf("error marshalling credentials secret : %v", err)
 		return
 	}
 
