@@ -48,17 +48,22 @@ func (m *MockClusterClient) EXPECT() *MockClusterClientMockRecorder {
 }
 
 // Apply mocks base method.
-func (m *MockClusterClient) Apply(arg0 context.Context, arg1 string, arg2 runtime.Object) error {
+func (m *MockClusterClient) Apply(arg0 context.Context, arg1 string, arg2 runtime.Object, arg3 ...kubernetes.KubectlApplyOption) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Apply", arg0, arg1, arg2)
+	varargs := []interface{}{arg0, arg1, arg2}
+	for _, a := range arg3 {
+		varargs = append(varargs, a)
+	}
+	ret := m.ctrl.Call(m, "Apply", varargs...)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
 // Apply indicates an expected call of Apply.
-func (mr *MockClusterClientMockRecorder) Apply(arg0, arg1, arg2 interface{}) *gomock.Call {
+func (mr *MockClusterClientMockRecorder) Apply(arg0, arg1, arg2 interface{}, arg3 ...interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Apply", reflect.TypeOf((*MockClusterClient)(nil).Apply), arg0, arg1, arg2)
+	varargs := append([]interface{}{arg0, arg1, arg2}, arg3...)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Apply", reflect.TypeOf((*MockClusterClient)(nil).Apply), varargs...)
 }
 
 // ApplyKubeSpecFromBytes mocks base method.
@@ -104,17 +109,17 @@ func (mr *MockClusterClientMockRecorder) ApplyKubeSpecFromBytesWithNamespace(arg
 }
 
 // BackupManagement mocks base method.
-func (m *MockClusterClient) BackupManagement(arg0 context.Context, arg1 *types.Cluster, arg2 string) error {
+func (m *MockClusterClient) BackupManagement(arg0 context.Context, arg1 *types.Cluster, arg2, arg3 string) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "BackupManagement", arg0, arg1, arg2)
+	ret := m.ctrl.Call(m, "BackupManagement", arg0, arg1, arg2, arg3)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
 // BackupManagement indicates an expected call of BackupManagement.
-func (mr *MockClusterClientMockRecorder) BackupManagement(arg0, arg1, arg2 interface{}) *gomock.Call {
+func (mr *MockClusterClientMockRecorder) BackupManagement(arg0, arg1, arg2, arg3 interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "BackupManagement", reflect.TypeOf((*MockClusterClient)(nil).BackupManagement), arg0, arg1, arg2)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "BackupManagement", reflect.TypeOf((*MockClusterClient)(nil).BackupManagement), arg0, arg1, arg2, arg3)
 }
 
 // CountMachineDeploymentReplicasReady mocks base method.
@@ -1003,17 +1008,22 @@ func (m *MockKubernetesClient) EXPECT() *MockKubernetesClientMockRecorder {
 }
 
 // Apply mocks base method.
-func (m *MockKubernetesClient) Apply(arg0 context.Context, arg1 string, arg2 runtime.Object) error {
+func (m *MockKubernetesClient) Apply(arg0 context.Context, arg1 string, arg2 runtime.Object, arg3 ...kubernetes.KubectlApplyOption) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Apply", arg0, arg1, arg2)
+	varargs := []interface{}{arg0, arg1, arg2}
+	for _, a := range arg3 {
+		varargs = append(varargs, a)
+	}
+	ret := m.ctrl.Call(m, "Apply", varargs...)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
 // Apply indicates an expected call of Apply.
-func (mr *MockKubernetesClientMockRecorder) Apply(arg0, arg1, arg2 interface{}) *gomock.Call {
+func (mr *MockKubernetesClientMockRecorder) Apply(arg0, arg1, arg2 interface{}, arg3 ...interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Apply", reflect.TypeOf((*MockKubernetesClient)(nil).Apply), arg0, arg1, arg2)
+	varargs := append([]interface{}{arg0, arg1, arg2}, arg3...)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Apply", reflect.TypeOf((*MockKubernetesClient)(nil).Apply), varargs...)
 }
 
 // ApplyKubeSpecFromBytes mocks base method.

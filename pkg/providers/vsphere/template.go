@@ -124,7 +124,7 @@ func buildTemplateMapCP(
 	datacenterSpec anywherev1.VSphereDatacenterConfigSpec,
 	controlPlaneMachineSpec, etcdMachineSpec anywherev1.VSphereMachineConfigSpec,
 ) (map[string]interface{}, error) {
-	versionsBundle := clusterSpec.ControlPlaneVersionsBundle()
+	versionsBundle := clusterSpec.RootVersionsBundle()
 	format := "cloud-config"
 	etcdExtraArgs := clusterapi.SecureEtcdTlsCipherSuitesExtraArgs()
 	sharedExtraArgs := clusterapi.SecureTlsCipherSuitesExtraArgs()
@@ -154,6 +154,7 @@ func buildTemplateMapCP(
 		"kubernetesVersion":                    versionsBundle.KubeDistro.Kubernetes.Tag,
 		"etcdRepository":                       versionsBundle.KubeDistro.Etcd.Repository,
 		"etcdImageTag":                         versionsBundle.KubeDistro.Etcd.Tag,
+		"externalEtcdReleaseUrl":               versionsBundle.KubeDistro.EtcdURL,
 		"corednsRepository":                    versionsBundle.KubeDistro.CoreDNS.Repository,
 		"corednsVersion":                       versionsBundle.KubeDistro.CoreDNS.Tag,
 		"nodeDriverRegistrarImage":             versionsBundle.KubeDistro.NodeDriverRegistrar.VersionedImage(),

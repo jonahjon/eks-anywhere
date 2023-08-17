@@ -84,6 +84,7 @@ type Dependencies struct {
 	Git                         *gitfactory.GitTools
 	EksdInstaller               *eksd.Installer
 	EksdUpgrader                *eksd.Upgrader
+	ClusterApplier              clustermanager.Applier
 	AnalyzerFactory             diagnostics.AnalyzerFactory
 	CollectorFactory            diagnostics.CollectorFactory
 	DignosticCollectorFactory   diagnostics.DiagnosticBundleFactory
@@ -106,6 +107,7 @@ type Dependencies struct {
 	IPValidator                 *validator.IPValidator
 	UnAuthKubectlClient         KubeClients
 	CreateClusterDefaulter      cli.CreateClusterDefaulter
+	UpgradeClusterDefaulter     cli.UpgradeClusterDefaulter
 }
 
 // KubeClients defines super struct that exposes all behavior.
@@ -126,7 +128,7 @@ func (d *Dependencies) Close(ctx context.Context) error {
 }
 
 func ForSpec(ctx context.Context, clusterSpec *cluster.Spec) *Factory {
-	versionsBundle := clusterSpec.ControlPlaneVersionsBundle()
+	versionsBundle := clusterSpec.RootVersionsBundle()
 	eksaToolsImage := versionsBundle.Eksa.CliTools
 	return NewFactory().
 		UseExecutableImage(eksaToolsImage.VersionedImage()).
@@ -1011,13 +1013,29 @@ func (f *Factory) WithCliConfig(cliConfig *cliconfig.CliConfig) *Factory {
 }
 
 // WithCreateClusterDefaulter builds a create cluster defaulter that builds defaulter dependencies specific to the create cluster command. The defaulter is then run once the factory is built in the create cluster command.
-func (f *Factory) WithCreateClusterDefaulter(createCliConfig cliconfig.CreateClusterCLIConfig) *Factory {
+func (f *Factory) WithCreateClusterDefaulter(createCliConfig *cliconfig.CreateClusterCLIConfig) *Factory {
 	f.buildSteps = append(f.buildSteps, func(ctx context.Context) error {
 		controlPlaneIPCheckAnnotationDefaulter := cluster.NewControlPlaneIPCheckAnnotationDefaulter(createCliConfig.SkipCPIPCheck)
+		machineHealthCheckDefaulter := cluster.NewMachineHealthCheckDefaulter(createCliConfig.NodeStartupTimeout, createCliConfig.UnhealthyMachineTimeout)
 
-		createClusterDefaulter := cli.NewCreateClusterDefaulter(controlPlaneIPCheckAnnotationDefaulter)
+		createClusterDefaulter := cli.NewCreateClusterDefaulter(controlPlaneIPCheckAnnotationDefaulter, machineHealthCheckDefaulter)
 
 		f.dependencies.CreateClusterDefaulter = createClusterDefaulter
+
+		return nil
+	})
+
+	return f
+}
+
+// WithUpgradeClusterDefaulter builds a create cluster defaulter that builds defaulter dependencies specific to the create cluster command. The defaulter is then run once the factory is built in the create cluster command.
+func (f *Factory) WithUpgradeClusterDefaulter(upgradeCliConfig *cliconfig.UpgradeClusterCLIConfig) *Factory {
+	f.buildSteps = append(f.buildSteps, func(ctx context.Context) error {
+		machineHealthCheckDefaulter := cluster.NewMachineHealthCheckDefaulter(upgradeCliConfig.NodeStartupTimeout, upgradeCliConfig.UnhealthyMachineTimeout)
+
+		upgradeClusterDefaulter := cli.NewUpgradeClusterDefaulter(machineHealthCheckDefaulter)
+
+		f.dependencies.UpgradeClusterDefaulter = upgradeClusterDefaulter
 
 		return nil
 	})
@@ -1078,6 +1096,27 @@ func (f *Factory) WithEksdUpgrader() *Factory {
 		return nil
 	})
 
+	return f
+}
+
+// WithClusterApplier builds a cluster applier.
+func (f *Factory) WithClusterApplier() *Factory {
+	f.WithLogger().WithUnAuthKubeClient().WithLogger()
+
+	f.buildSteps = append(f.buildSteps, func(ctx context.Context) error {
+		var opts []clustermanager.ApplierOpt
+		if f.config.noTimeouts {
+			// opts = append(opts, clustermanager.ManagementUpgraderRetrier(*retrier.NewWithNoTimeout()))
+			opts = append(opts, clustermanager.WithApplierNoTimeouts())
+		}
+
+		f.dependencies.ClusterApplier = clustermanager.NewApplier(
+			f.dependencies.Logger,
+			f.dependencies.UnAuthKubeClient,
+			opts...,
+		)
+		return nil
+	})
 	return f
 }
 
@@ -1208,7 +1247,7 @@ func (f *Factory) WithPackageControllerClient(spec *cluster.Spec, kubeConfig str
 		if err != nil {
 			return err
 		}
-		bundle := spec.ControlPlaneVersionsBundle()
+		bundle := spec.RootVersionsBundle()
 		if bundle == nil {
 			return fmt.Errorf("could not find VersionsBundle")
 		}

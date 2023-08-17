@@ -32,6 +32,7 @@ type factoryTest struct {
 	tinkerbellBootstrapIP string
 	cliConfig             config.CliConfig
 	createCLIConfig       config.CreateClusterCLIConfig
+	upgradeCLIConfig      config.UpgradeClusterCLIConfig
 }
 
 type provider string
@@ -62,12 +63,18 @@ func newTest(t *testing.T, p provider) *factoryTest {
 		SkipCPIPCheck: false,
 	}
 
+	upgradeCLIConfig := config.UpgradeClusterCLIConfig{
+		NodeStartupTimeout:      5 * time.Minute,
+		UnhealthyMachineTimeout: 5 * time.Minute,
+	}
+
 	return &factoryTest{
 		WithT:             NewGomegaWithT(t),
 		clusterConfigFile: clusterConfigFile,
 		clusterSpec:       test.NewFullClusterSpec(t, clusterConfigFile),
 		ctx:               context.Background(),
 		createCLIConfig:   createCLIConfig,
+		upgradeCLIConfig:  upgradeCLIConfig,
 	}
 }
 
@@ -219,8 +226,10 @@ func TestFactoryBuildWithMultipleDependencies(t *testing.T) {
 		WithVSphereValidator().
 		WithCiliumTemplater().
 		WithIPValidator().
+		WithClusterApplier().
 		WithValidatorClients().
-		WithCreateClusterDefaulter(tt.createCLIConfig).
+		WithCreateClusterDefaulter(&tt.createCLIConfig).
+		WithUpgradeClusterDefaulter(&tt.upgradeCLIConfig).
 		Build(context.Background())
 
 	tt.Expect(err).To(BeNil())
@@ -241,6 +250,7 @@ func TestFactoryBuildWithMultipleDependencies(t *testing.T) {
 	tt.Expect(deps.VSphereValidator).NotTo(BeNil())
 	tt.Expect(deps.CiliumTemplater).NotTo(BeNil())
 	tt.Expect(deps.IPValidator).NotTo(BeNil())
+	tt.Expect(deps.ClusterApplier).NotTo(BeNil())
 	tt.Expect(deps.UnAuthKubectlClient).NotTo(BeNil())
 }
 
@@ -548,6 +558,18 @@ func TestFactoryBuildWithCNIInstallerKindnetd(t *testing.T) {
 
 	tt.Expect(err).To(BeNil())
 	tt.Expect(deps.CNIInstaller).NotTo(BeNil())
+}
+
+func TestFactoryBuildWithClusterApplierNoTimeout(t *testing.T) {
+	tt := newTest(t, vsphere)
+	deps, err := dependencies.NewFactory().
+		WithLocalExecutables().
+		WithNoTimeouts().
+		WithClusterApplier().
+		Build(context.Background())
+
+	tt.Expect(err).To(BeNil())
+	tt.Expect(deps.ClusterApplier).NotTo(BeNil())
 }
 
 func TestFactoryBuildWithAwsIamAuthNoTimeout(t *testing.T) {

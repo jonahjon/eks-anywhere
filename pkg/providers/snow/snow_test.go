@@ -135,6 +135,7 @@ func givenVersionsBundle() *cluster.VersionsBundle {
 				URI: "public.ecr.aws/eks-distro/kubernetes/pause:0.0.1",
 			},
 			EtcdVersion: "3.4.16",
+			EtcdURL:     "https://distro.eks.amazonaws.com/kubernetes-1-21/releases/4/artifacts/etcd/v3.4.16/etcd-linux-amd64-v3.4.16.tar.gz",
 		},
 		VersionsBundle: &releasev1alpha1.VersionsBundle{
 			KubeVersion: "1.21",
@@ -991,7 +992,7 @@ func TestVersion(t *testing.T) {
 
 func TestGetInfrastructureBundle(t *testing.T) {
 	tt := newSnowTest(t)
-	bundle := tt.clusterSpec.ControlPlaneVersionsBundle()
+	bundle := tt.clusterSpec.RootVersionsBundle()
 	want := &types.InfrastructureBundle{
 		FolderName: "infrastructure-snow/v1.0.2/",
 		Manifests: []releasev1alpha1.Manifest{

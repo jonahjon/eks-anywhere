@@ -1316,9 +1316,9 @@ func TestClusterManagerBackupCAPISuccess(t *testing.T) {
 	ctx := context.Background()
 
 	c, m := newClusterManager(t)
-	m.client.EXPECT().BackupManagement(ctx, from, managementStatePath)
+	m.client.EXPECT().BackupManagement(ctx, from, managementStatePath, from.Name)
 
-	if err := c.BackupCAPI(ctx, from, managementStatePath); err != nil {
+	if err := c.BackupCAPI(ctx, from, managementStatePath, from.Name); err != nil {
 		t.Errorf("ClusterManager.BackupCAPI() error = %v, wantErr nil", err)
 	}
 }
@@ -1332,13 +1332,28 @@ func TestClusterManagerBackupCAPIRetrySuccess(t *testing.T) {
 
 	c, m := newClusterManager(t)
 	// m.client.EXPECT().BackupManagement(ctx, from, managementStatePath)
-	firstTry := m.client.EXPECT().BackupManagement(ctx, from, managementStatePath).Return(errors.New("Error: failed to connect to the management cluster: action failed after 9 attempts: Get \"https://127.0.0.1:61994/api?timeout=30s\": EOF"))
-	secondTry := m.client.EXPECT().BackupManagement(ctx, from, managementStatePath).Return(nil)
+	firstTry := m.client.EXPECT().BackupManagement(ctx, from, managementStatePath, from.Name).Return(errors.New("Error: failed to connect to the management cluster: action failed after 9 attempts: Get \"https://127.0.0.1:61994/api?timeout=30s\": EOF"))
+	secondTry := m.client.EXPECT().BackupManagement(ctx, from, managementStatePath, from.Name).Return(nil)
 	gomock.InOrder(
 		firstTry,
 		secondTry,
 	)
-	if err := c.BackupCAPI(ctx, from, managementStatePath); err != nil {
+	if err := c.BackupCAPI(ctx, from, managementStatePath, from.Name); err != nil {
+		t.Errorf("ClusterManager.BackupCAPI() error = %v, wantErr nil", err)
+	}
+}
+
+func TestClusterManagerBackupCAPIWaitForInfrastructureSuccess(t *testing.T) {
+	from := &types.Cluster{
+		Name: "from-cluster",
+	}
+
+	ctx := context.Background()
+
+	c, m := newClusterManager(t)
+	m.client.EXPECT().BackupManagement(ctx, from, managementStatePath, from.Name)
+
+	if err := c.BackupCAPIWaitForInfrastructure(ctx, from, managementStatePath, from.Name); err != nil {
 		t.Errorf("ClusterManager.BackupCAPI() error = %v, wantErr nil", err)
 	}
 }
@@ -1346,8 +1361,6 @@ func TestClusterManagerBackupCAPIRetrySuccess(t *testing.T) {
 func TestClusterctlWaitRetryPolicy(t *testing.T) {
 	connectionRefusedError := fmt.Errorf("Error: failed to connect to the management cluster: action failed after 9 attempts: Get \"https://127.0.0.1:53733/api?timeout=30s\": dial tcp 127.0.0.1:53733: connect: connection refused")
 	ioTimeoutError := fmt.Errorf("Error: failed to connect to the management cluster: action failed after 9 attempts: Get \"https://127.0.0.1:61994/api?timeout=30s\": net/http: TLS handshake timeout")
-	infrastructureError := fmt.Errorf("Error: failed to get object graph: failed to check for provisioned infrastructure: cannot start the move operation while cluster is still provisioning the infrastructure")
-	nodeError := fmt.Errorf("Error: failed to get object graph: failed to check for provisioned infrastructure: cannot start the move operation while machine is still provisioning the node")
 	miscellaneousError := fmt.Errorf("Some other random miscellaneous error")
 
 	_, wait := clustermanager.ClusterctlMoveRetryPolicy(1, connectionRefusedError)
@@ -1370,31 +1383,66 @@ func TestClusterctlWaitRetryPolicy(t *testing.T) {
 		t.Errorf("ClusterctlMoveRetryPolicy didn't correctly calculate first retry wait for ioTimeout")
 	}
 
-	_, wait = clustermanager.ClusterctlMoveRetryPolicy(1, infrastructureError)
-	if wait != 10*time.Second {
-		t.Errorf("ClusterctlMoveRetryPolicy didn't correctly calculate first retry wait for infrastructureError")
-	}
-
-	_, wait = clustermanager.ClusterctlMoveRetryPolicy(1, nodeError)
-	if wait != 10*time.Second {
-		t.Errorf("ClusterctlMoveRetryPolicy didn't correctly calculate first retry wait for nodeError")
-	}
-
 	retry, _ := clustermanager.ClusterctlMoveRetryPolicy(1, miscellaneousError)
 	if retry != false {
 		t.Errorf("ClusterctlMoveRetryPolicy didn't not-retry on non-network error")
 	}
 }
 
+func TestClusterctlWaitForInfrastructureRetryPolicy(t *testing.T) {
+	connectionRefusedError := fmt.Errorf("Error: failed to connect to the management cluster: action failed after 9 attempts: Get \"https://127.0.0.1:53733/api?timeout=30s\": dial tcp 127.0.0.1:53733: connect: connection refused")
+	ioTimeoutError := fmt.Errorf("Error: failed to connect to the management cluster: action failed after 9 attempts: Get \"https://127.0.0.1:61994/api?timeout=30s\": net/http: TLS handshake timeout")
+	infrastructureError := fmt.Errorf("Error: failed to get object graph: failed to check for provisioned infrastructure: cannot start the move operation while cluster is still provisioning the infrastructure")
+	nodeError := fmt.Errorf("Error: failed to get object graph: failed to check for provisioned infrastructure: cannot start the move operation while machine is still provisioning the node")
+	miscellaneousError := fmt.Errorf("Some other random miscellaneous error")
+
+	_, wait := clustermanager.ClusterctlMoveWaitForInfrastructureRetryPolicy(1, connectionRefusedError)
+	if wait != 10*time.Second {
+		t.Errorf("ClusterctlMoveRetryPolicy didn't correctly calculate first retry wait for connection refused")
+	}
+
+	_, wait = clustermanager.ClusterctlMoveWaitForInfrastructureRetryPolicy(-1, connectionRefusedError)
+	if wait != 10*time.Second {
+		t.Errorf("ClusterctlMoveRetryPolicy didn't correctly protect for total retries < 0")
+	}
+
+	_, wait = clustermanager.ClusterctlMoveWaitForInfrastructureRetryPolicy(2, connectionRefusedError)
+	if wait != 15*time.Second {
+		t.Errorf("ClusterctlMoveRetryPolicy didn't correctly protect for second retry wait")
+	}
+
+	_, wait = clustermanager.ClusterctlMoveWaitForInfrastructureRetryPolicy(1, ioTimeoutError)
+	if wait != 10*time.Second {
+		t.Errorf("ClusterctlMoveRetryPolicy didn't correctly calculate first retry wait for ioTimeout")
+	}
+
+	_, wait = clustermanager.ClusterctlMoveWaitForInfrastructureRetryPolicy(1, infrastructureError)
+	if wait != 10*time.Second {
+		t.Errorf("ClusterctlMoveRetryPolicy didn't correctly calculate first retry wait for infrastructureError")
+	}
+
+	_, wait = clustermanager.ClusterctlMoveWaitForInfrastructureRetryPolicy(1, nodeError)
+	if wait != 10*time.Second {
+		t.Errorf("ClusterctlMoveRetryPolicy didn't correctly calculate first retry wait for nodeError")
+	}
+
+	retry, _ := clustermanager.ClusterctlMoveWaitForInfrastructureRetryPolicy(1, miscellaneousError)
+	if retry != false {
+		t.Errorf("ClusterctlMoveRetryPolicy didn't not-retry on non-network error")
+	}
+}
+
 func TestClusterManagerBackupCAPIError(t *testing.T) {
-	from := &types.Cluster{}
+	from := &types.Cluster{
+		Name: "from-cluster",
+	}
 
 	ctx := context.Background()
 
 	c, m := newClusterManager(t)
-	m.client.EXPECT().BackupManagement(ctx, from, managementStatePath).Return(errors.New("backing up CAPI resources"))
+	m.client.EXPECT().BackupManagement(ctx, from, managementStatePath, from.Name).Return(errors.New("backing up CAPI resources"))
 
-	if err := c.BackupCAPI(ctx, from, managementStatePath); err == nil {
+	if err := c.BackupCAPI(ctx, from, managementStatePath, from.Name); err == nil {
 		t.Errorf("ClusterManager.BackupCAPI() error = %v, wantErr nil", err)
 	}
 }
@@ -1885,7 +1933,15 @@ func TestInstallMachineHealthChecks(t *testing.T) {
 	ctx := context.Background()
 	tt := newTest(t)
 	tt.clusterSpec.Cluster.Spec.WorkerNodeGroupConfigurations[0].Name = "worker-1"
-	wantMHC := expectedMachineHealthCheck(clustermanager.DefaultUnhealthyMachineTimeout, clustermanager.DefaultNodeStartupTimeout)
+	tt.clusterSpec.Cluster.Spec.MachineHealthCheck = &v1alpha1.MachineHealthCheck{
+		UnhealthyMachineTimeout: &metav1.Duration{
+			Duration: constants.DefaultUnhealthyMachineTimeout,
+		},
+		NodeStartupTimeout: &metav1.Duration{
+			Duration: constants.DefaultNodeStartupTimeout,
+		},
+	}
+	wantMHC := expectedMachineHealthCheck(constants.DefaultUnhealthyMachineTimeout, constants.DefaultNodeStartupTimeout)
 	tt.mocks.client.EXPECT().ApplyKubeSpecFromBytes(ctx, tt.cluster, wantMHC)
 
 	if err := tt.clusterManager.InstallMachineHealthChecks(ctx, tt.clusterSpec, tt.cluster); err != nil {
@@ -1895,9 +1951,17 @@ func TestInstallMachineHealthChecks(t *testing.T) {
 
 func TestInstallMachineHealthChecksWithTimeoutOverride(t *testing.T) {
 	ctx := context.Background()
-	tt := newTest(t, clustermanager.WithUnhealthyMachineTimeout(30*time.Minute), clustermanager.WithNodeStartupTimeout(20*time.Minute))
+	tt := newTest(t)
+	tt.clusterSpec.Cluster.Spec.MachineHealthCheck = &v1alpha1.MachineHealthCheck{
+		UnhealthyMachineTimeout: &metav1.Duration{
+			Duration: (30 * time.Minute),
+		},
+		NodeStartupTimeout: &metav1.Duration{
+			Duration: (30 * time.Minute),
+		},
+	}
 	tt.clusterSpec.Cluster.Spec.WorkerNodeGroupConfigurations[0].Name = "worker-1"
-	wantMHC := expectedMachineHealthCheck(30*time.Minute, 20*time.Minute)
+	wantMHC := expectedMachineHealthCheck(30*time.Minute, 30*time.Minute)
 	tt.mocks.client.EXPECT().ApplyKubeSpecFromBytes(ctx, tt.cluster, wantMHC)
 
 	if err := tt.clusterManager.InstallMachineHealthChecks(ctx, tt.clusterSpec, tt.cluster); err != nil {
@@ -1906,9 +1970,19 @@ func TestInstallMachineHealthChecksWithTimeoutOverride(t *testing.T) {
 }
 
 func TestInstallMachineHealthChecksWithNoTimeout(t *testing.T) {
-	tt := newTest(t, clustermanager.WithNoTimeouts())
+	tt := newTest(t)
 	tt.clusterSpec.Cluster.Spec.WorkerNodeGroupConfigurations[0].Name = "worker-1"
+	maxTime := time.Duration(math.MaxInt64)
+	tt.clusterSpec.Cluster.Spec.MachineHealthCheck = &v1alpha1.MachineHealthCheck{
+		UnhealthyMachineTimeout: &metav1.Duration{
+			Duration: maxTime,
+		},
+		NodeStartupTimeout: &metav1.Duration{
+			Duration: maxTime,
+		},
+	}
 	wantMHC := expectedMachineHealthCheck(maxTime, maxTime)
+
 	tt.mocks.client.EXPECT().ApplyKubeSpecFromBytes(tt.ctx, tt.cluster, wantMHC)
 
 	tt.Expect(tt.clusterManager.InstallMachineHealthChecks(tt.ctx, tt.clusterSpec, tt.cluster)).To(Succeed())
@@ -1918,6 +1992,14 @@ func TestInstallMachineHealthChecksApplyError(t *testing.T) {
 	ctx := context.Background()
 	tt := newTest(t, clustermanager.WithRetrier(retrier.NewWithMaxRetries(2, 0)))
 	tt.clusterSpec.Cluster.Spec.WorkerNodeGroupConfigurations[0].Name = "worker-1"
+	tt.clusterSpec.Cluster.Spec.MachineHealthCheck = &v1alpha1.MachineHealthCheck{
+		UnhealthyMachineTimeout: &metav1.Duration{
+			Duration: constants.DefaultUnhealthyMachineTimeout,
+		},
+		NodeStartupTimeout: &metav1.Duration{
+			Duration: constants.DefaultNodeStartupTimeout,
+		},
+	}
 	wantMHC := expectedMachineHealthCheck(clustermanager.DefaultUnhealthyMachineTimeout, clustermanager.DefaultNodeStartupTimeout)
 	tt.mocks.client.EXPECT().ApplyKubeSpecFromBytes(ctx, tt.cluster, wantMHC).Return(errors.New("apply error")).MaxTimes(2)
 

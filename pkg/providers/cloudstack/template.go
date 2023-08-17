@@ -100,7 +100,7 @@ func (cs *TemplateBuilder) GenerateCAPISpecWorkers(clusterSpec *cluster.Spec, wo
 // nolint:gocyclo
 func buildTemplateMapCP(clusterSpec *cluster.Spec) (map[string]interface{}, error) {
 	datacenterConfigSpec := clusterSpec.CloudStackDatacenter.Spec
-	versionsBundle := clusterSpec.ControlPlaneVersionsBundle()
+	versionsBundle := clusterSpec.RootVersionsBundle()
 
 	format := "cloud-config"
 	host, port, err := getValidControlPlaneHostPort(clusterSpec.Cluster.Spec.ControlPlaneConfiguration.Endpoint.Host)
@@ -186,6 +186,7 @@ func buildTemplateMapCP(clusterSpec *cluster.Spec) (map[string]interface{}, erro
 		"schedulerExtraArgs":                         sharedExtraArgs.ToPartialYaml(),
 		"format":                                     format,
 		"externalEtcdVersion":                        versionsBundle.KubeDistro.EtcdVersion,
+		"externalEtcdReleaseUrl":                     versionsBundle.KubeDistro.EtcdURL,
 		"etcdImage":                                  versionsBundle.KubeDistro.EtcdImage.VersionedImage(),
 		"eksaSystemNamespace":                        constants.EksaSystemNamespace,
 	}

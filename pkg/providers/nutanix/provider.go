@@ -381,8 +381,8 @@ func NeedsNewWorkloadTemplate(oldSpec, newSpec *cluster.Spec, oldNmc, newNmc *v1
 	if oldSpec.Bundles.Spec.Number != newSpec.Bundles.Spec.Number {
 		return true
 	}
-	if !v1alpha1.WorkerNodeGroupConfigurationSliceTaintsEqual(oldSpec.Cluster.Spec.WorkerNodeGroupConfigurations, newSpec.Cluster.Spec.WorkerNodeGroupConfigurations) ||
-		!v1alpha1.WorkerNodeGroupConfigurationsLabelsMapEqual(oldSpec.Cluster.Spec.WorkerNodeGroupConfigurations, newSpec.Cluster.Spec.WorkerNodeGroupConfigurations) ||
+	if !v1alpha1.TaintsSliceEqual(oldWorker.Taints, newWorker.Taints) ||
+		!v1alpha1.MapEqual(oldWorker.Labels, newWorker.Labels) ||
 		!v1alpha1.WorkerNodeGroupConfigurationKubeVersionUnchanged(&oldWorker, &newWorker, oldSpec.Cluster, newSpec.Cluster) {
 		return true
 	}
@@ -522,7 +522,7 @@ func (p *Provider) UpdateKubeConfig(content *[]byte, clusterName string) error {
 
 // Version returns the nutanix version from the VersionsBundle.
 func (p *Provider) Version(clusterSpec *cluster.Spec) string {
-	versionsBundle := clusterSpec.ControlPlaneVersionsBundle()
+	versionsBundle := clusterSpec.RootVersionsBundle()
 	return versionsBundle.Nutanix.Version
 }
 
@@ -546,7 +546,7 @@ func (p *Provider) GetDeployments() map[string][]string {
 }
 
 func (p *Provider) GetInfrastructureBundle(clusterSpec *cluster.Spec) *types.InfrastructureBundle {
-	versionsBundle := clusterSpec.ControlPlaneVersionsBundle()
+	versionsBundle := clusterSpec.RootVersionsBundle()
 	manifests := []releasev1alpha1.Manifest{
 		versionsBundle.Nutanix.Components,
 		versionsBundle.Nutanix.Metadata,
@@ -612,8 +612,8 @@ func (p *Provider) ValidateNewSpec(_ context.Context, _ *types.Cluster, _ *clust
 }
 
 func (p *Provider) ChangeDiff(currentSpec, newSpec *cluster.Spec) *types.ComponentChangeDiff {
-	currentVersionsBundle := currentSpec.ControlPlaneVersionsBundle()
-	newVersionsBundle := newSpec.ControlPlaneVersionsBundle()
+	currentVersionsBundle := currentSpec.RootVersionsBundle()
+	newVersionsBundle := newSpec.RootVersionsBundle()
 	if currentVersionsBundle.Nutanix.Version == newVersionsBundle.Nutanix.Version {
 		return nil
 	}

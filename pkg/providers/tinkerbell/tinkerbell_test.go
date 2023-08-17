@@ -416,7 +416,7 @@ func TestPreCAPIInstallOnBootstrapSuccess(t *testing.T) {
 	provider := newProvider(datacenterConfig, machineConfigs, clusterSpec.Cluster, writer, docker, helm, kubectl, forceCleanup)
 	provider.stackInstaller = stackInstaller
 
-	bundle := clusterSpec.ControlPlaneVersionsBundle()
+	bundle := clusterSpec.RootVersionsBundle()
 
 	stackInstaller.EXPECT().Install(
 		ctx,
@@ -453,7 +453,7 @@ func TestPostWorkloadInitSuccess(t *testing.T) {
 	provider := newProvider(datacenterConfig, machineConfigs, clusterSpec.Cluster, writer, docker, helm, kubectl, forceCleanup)
 	provider.stackInstaller = stackInstaller
 
-	bundle := clusterSpec.ControlPlaneVersionsBundle()
+	bundle := clusterSpec.RootVersionsBundle()
 
 	stackInstaller.EXPECT().Install(
 		ctx,
@@ -1048,6 +1048,55 @@ func TestSetupAndValidateCreateWorkloadClusterSuccess(t *testing.T) {
 	kubectl.EXPECT().GetProvisionedTinkerbellHardware(ctx, clusterSpec.ManagementCluster.KubeconfigFile, constants.EksaSystemNamespace).Return([]tinkv1alpha1.Hardware{}, nil)
 	kubectl.EXPECT().GetEksaCluster(ctx, clusterSpec.ManagementCluster, clusterSpec.ManagementCluster.Name).Return(clusterSpec.Cluster, nil)
 	kubectl.EXPECT().GetEksaTinkerbellDatacenterConfig(ctx, datacenterConfig.Name, clusterSpec.ManagementCluster.KubeconfigFile, clusterSpec.Cluster.Namespace).Return(datacenterConfig, nil)
+	kubectl.EXPECT().ApplyKubeSpecFromBytesForce(ctx, clusterSpec.ManagementCluster, gomock.Any())
+	kubectl.EXPECT().WaitForRufioMachines(ctx, clusterSpec.ManagementCluster, "5m", "Contactable", constants.EksaSystemNamespace)
+
+	err := provider.SetupAndValidateCreateCluster(ctx, clusterSpec)
+	if err != nil {
+		t.Fatalf("unexpected failure %v", err)
+	}
+	assert.NoError(t, err, "No error should be returned")
+}
+
+func TestSetupAndValidateCreateWorkloadClusterDifferentNamespaceSuccess(t *testing.T) {
+	clusterSpecManifest := "cluster_tinkerbell_stacked_etcd.yaml"
+	mockCtrl := gomock.NewController(t)
+	docker := stackmocks.NewMockDocker(mockCtrl)
+	helm := stackmocks.NewMockHelm(mockCtrl)
+	kubectl := mocks.NewMockProviderKubectlClient(mockCtrl)
+	stackInstaller := stackmocks.NewMockStackInstaller(mockCtrl)
+	writer := filewritermocks.NewMockFileWriter(mockCtrl)
+
+	forceCleanup := false
+
+	clusterSpec := givenClusterSpec(t, clusterSpecManifest)
+	datacenterConfig := givenDatacenterConfig(t, clusterSpecManifest)
+	machineConfigs := givenMachineConfigs(t, clusterSpecManifest)
+	managementCluster := clusterSpec.Cluster.DeepCopy()
+	managementCluster.Namespace = "different-namespace"
+	ctx := context.Background()
+
+	provider := newProvider(datacenterConfig, machineConfigs, clusterSpec.Cluster, writer, docker, helm, kubectl, forceCleanup)
+	provider.stackInstaller = stackInstaller
+
+	stackInstaller.EXPECT().CleanupLocalBoots(ctx, forceCleanup)
+	provider.providerKubectlClient = kubectl
+
+	clusterSpec.Cluster.SetManagedBy("management-cluster")
+	clusterSpec.ManagementCluster = &types.Cluster{
+		Name:               "management-cluster",
+		KubeconfigFile:     "kc.kubeconfig",
+		ExistingManagement: true,
+	}
+	for _, config := range machineConfigs {
+		kubectl.EXPECT().SearchTinkerbellMachineConfig(ctx, config.Name, clusterSpec.ManagementCluster.KubeconfigFile, config.Namespace).Return([]*v1alpha1.TinkerbellMachineConfig{}, nil)
+	}
+	kubectl.EXPECT().SearchTinkerbellDatacenterConfig(ctx, datacenterConfig.Name, clusterSpec.ManagementCluster.KubeconfigFile, clusterSpec.Cluster.Namespace).Return([]*v1alpha1.TinkerbellDatacenterConfig{}, nil)
+
+	kubectl.EXPECT().GetUnprovisionedTinkerbellHardware(ctx, clusterSpec.ManagementCluster.KubeconfigFile, constants.EksaSystemNamespace).Return([]tinkv1alpha1.Hardware{}, nil)
+	kubectl.EXPECT().GetProvisionedTinkerbellHardware(ctx, clusterSpec.ManagementCluster.KubeconfigFile, constants.EksaSystemNamespace).Return([]tinkv1alpha1.Hardware{}, nil)
+	kubectl.EXPECT().GetEksaCluster(ctx, clusterSpec.ManagementCluster, clusterSpec.ManagementCluster.Name).Return(managementCluster, nil)
+	kubectl.EXPECT().GetEksaTinkerbellDatacenterConfig(ctx, datacenterConfig.Name, clusterSpec.ManagementCluster.KubeconfigFile, managementCluster.Namespace).Return(datacenterConfig, nil)
 	kubectl.EXPECT().ApplyKubeSpecFromBytesForce(ctx, clusterSpec.ManagementCluster, gomock.Any())
 	kubectl.EXPECT().WaitForRufioMachines(ctx, clusterSpec.ManagementCluster, "5m", "Contactable", constants.EksaSystemNamespace)
 

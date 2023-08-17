@@ -203,8 +203,8 @@ func (p *cloudstackProvider) ValidateNewSpec(ctx context.Context, cluster *types
 }
 
 func (p *cloudstackProvider) ChangeDiff(currentSpec, newSpec *cluster.Spec) *types.ComponentChangeDiff {
-	currentVersionsBundle := currentSpec.ControlPlaneVersionsBundle()
-	newVersionsBundle := newSpec.ControlPlaneVersionsBundle()
+	currentVersionsBundle := currentSpec.RootVersionsBundle()
+	newVersionsBundle := newSpec.RootVersionsBundle()
 	if currentVersionsBundle.CloudStack.Version == newVersionsBundle.CloudStack.Version {
 		return nil
 	}
@@ -447,8 +447,8 @@ func NeedsNewWorkloadTemplate(oldSpec, newSpec *cluster.Spec, oldCsdc, newCsdc *
 	if oldSpec.Bundles.Spec.Number != newSpec.Bundles.Spec.Number {
 		return true
 	}
-	if !v1alpha1.WorkerNodeGroupConfigurationSliceTaintsEqual(oldSpec.Cluster.Spec.WorkerNodeGroupConfigurations, newSpec.Cluster.Spec.WorkerNodeGroupConfigurations) ||
-		!v1alpha1.WorkerNodeGroupConfigurationsLabelsMapEqual(oldSpec.Cluster.Spec.WorkerNodeGroupConfigurations, newSpec.Cluster.Spec.WorkerNodeGroupConfigurations) ||
+	if !v1alpha1.TaintsSliceEqual(oldWorker.Taints, newWorker.Taints) ||
+		!v1alpha1.MapEqual(oldWorker.Labels, newWorker.Labels) ||
 		!v1alpha1.WorkerNodeGroupConfigurationKubeVersionUnchanged(oldWorker, newWorker, oldSpec.Cluster, newSpec.Cluster) {
 		return true
 	}
@@ -812,7 +812,7 @@ func (p *cloudstackProvider) BootstrapSetup(ctx context.Context, clusterConfig *
 }
 
 func (p *cloudstackProvider) Version(clusterSpec *cluster.Spec) string {
-	versionsBundle := clusterSpec.ControlPlaneVersionsBundle()
+	versionsBundle := clusterSpec.RootVersionsBundle()
 	return versionsBundle.CloudStack.Version
 }
 
@@ -833,7 +833,7 @@ func (p *cloudstackProvider) GetDeployments() map[string][]string {
 }
 
 func (p *cloudstackProvider) GetInfrastructureBundle(clusterSpec *cluster.Spec) *types.InfrastructureBundle {
-	versionsBundle := clusterSpec.ControlPlaneVersionsBundle()
+	versionsBundle := clusterSpec.RootVersionsBundle()
 	folderName := fmt.Sprintf("infrastructure-cloudstack/%s/", versionsBundle.CloudStack.Version)
 
 	infraBundle := types.InfrastructureBundle{

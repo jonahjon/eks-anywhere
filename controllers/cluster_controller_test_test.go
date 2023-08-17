@@ -22,9 +22,10 @@ import (
 	"github.com/aws/eks-anywhere/internal/test"
 	"github.com/aws/eks-anywhere/internal/test/envtest"
 	anywherev1 "github.com/aws/eks-anywhere/pkg/api/v1alpha1"
-	"github.com/aws/eks-anywhere/pkg/cluster"
+	c "github.com/aws/eks-anywhere/pkg/cluster"
 	"github.com/aws/eks-anywhere/pkg/constants"
 	"github.com/aws/eks-anywhere/pkg/controller"
+	"github.com/aws/eks-anywhere/pkg/controller/clientutil"
 	"github.com/aws/eks-anywhere/pkg/controller/clusters"
 	"github.com/aws/eks-anywhere/release/api/v1alpha1"
 )
@@ -131,7 +132,10 @@ func TestClusterReconcilerEnsureOwnerReferences(t *testing.T) {
 	pcc := newMockPackagesClient(t)
 	pcc.EXPECT().Reconcile(ctx, gomock.Any(), gomock.Any(), gomock.Any()).Return(nil)
 
-	r := controllers.NewClusterReconciler(cl, newRegistryForDummyProviderReconciler(), iam, validator, pcc)
+	mhc := newMockMachineHealthCheckReconciler(t)
+	mhc.EXPECT().Reconcile(ctx, gomock.AssignableToTypeOf(logr.Logger{}), gomock.AssignableToTypeOf(cluster)).Return(nil)
+
+	r := controllers.NewClusterReconciler(cl, newRegistryForDummyProviderReconciler(), iam, validator, pcc, mhc)
 	_, err := r.Reconcile(ctx, clusterRequest(cluster))
 
 	g.Expect(cl.Get(ctx, client.ObjectKey{Namespace: cluster.Spec.BundlesRef.Namespace, Name: cluster.Spec.BundlesRef.Name}, bundles)).To(Succeed())
@@ -188,7 +192,7 @@ func TestClusterReconcilerReconcileChildObjectNotFound(t *testing.T) {
 	cl := cb.WithRuntimeObjects(objs...).Build()
 	api := envtest.NewAPIExpecter(t, cl)
 
-	r := controllers.NewClusterReconciler(cl, newRegistryForDummyProviderReconciler(), newMockAWSIamConfigReconciler(t), newMockClusterValidator(t), nil)
+	r := controllers.NewClusterReconciler(cl, newRegistryForDummyProviderReconciler(), newMockAWSIamConfigReconciler(t), newMockClusterValidator(t), nil, newMockMachineHealthCheckReconciler(t))
 	g.Expect(r.Reconcile(ctx, clusterRequest(cluster))).Error().To(MatchError(ContainSubstring("not found")))
 	c := envtest.CloneNameNamespace(cluster)
 	api.ShouldEventuallyMatch(ctx, c, func(g Gomega) {
@@ -201,7 +205,7 @@ func TestClusterReconcilerReconcileChildObjectNotFound(t *testing.T) {
 
 func TestClusterReconcilerSetupWithManager(t *testing.T) {
 	client := env.Client()
-	r := controllers.NewClusterReconciler(client, newRegistryForDummyProviderReconciler(), newMockAWSIamConfigReconciler(t), newMockClusterValidator(t), nil)
+	r := controllers.NewClusterReconciler(client, newRegistryForDummyProviderReconciler(), newMockAWSIamConfigReconciler(t), newMockClusterValidator(t), nil, nil)
 
 	g := NewWithT(t)
 	g.Expect(r.SetupWithManager(env.Manager(), env.Manager().GetLogger())).To(Succeed())
@@ -223,18 +227,20 @@ func TestClusterReconcilerManagementClusterNotFound(t *testing.T) {
 			Namespace: "my-namespace",
 		},
 	}
-	cluster.SetManagedBy("my-management-cluster")
+	cluster.SetManagedBy("my-management-cluster-2")
 
 	objs := []runtime.Object{cluster, managementCluster}
 	cb := fake.NewClientBuilder()
+	cb.WithIndex(&anywherev1.Cluster{}, "metadata.name", clientutil.ClusterNameIndexer)
 	cl := cb.WithRuntimeObjects(objs...).Build()
 	api := envtest.NewAPIExpecter(t, cl)
 
-	r := controllers.NewClusterReconciler(cl, newRegistryForDummyProviderReconciler(), newMockAWSIamConfigReconciler(t), newMockClusterValidator(t), nil)
+	r := controllers.NewClusterReconciler(cl, newRegistryForDummyProviderReconciler(), newMockAWSIamConfigReconciler(t), newMockClusterValidator(t), nil, nil)
 	g.Expect(r.Reconcile(ctx, clusterRequest(cluster))).Error().To(BeNil())
+
 	c := envtest.CloneNameNamespace(cluster)
 	api.ShouldEventuallyMatch(ctx, c, func(g Gomega) {
-		g.Expect(c.Status.FailureMessage).To(HaveValue(Equal("Management cluster my-management-cluster does not exist")))
+		g.Expect(c.Status.FailureMessage).To(HaveValue(Equal("Management cluster my-management-cluster-2 does not exist")))
 		g.Expect(c.Status.FailureReason).To(HaveValue(Equal(anywherev1.ManagementClusterRefInvalidReason)))
 	})
 }
@@ -311,7 +317,10 @@ func TestClusterReconcilerSetBundlesRef(t *testing.T) {
 	validator := newMockClusterValidator(t)
 	validator.EXPECT().ValidateManagementClusterName(ctx, gomock.AssignableToTypeOf(logr.Logger{}), gomock.AssignableToTypeOf(cluster)).Return(nil)
 
-	r := controllers.NewClusterReconciler(cl, newRegistryForDummyProviderReconciler(), newMockAWSIamConfigReconciler(t), validator, pcc)
+	mhc := newMockMachineHealthCheckReconciler(t)
+	mhc.EXPECT().Reconcile(ctx, gomock.AssignableToTypeOf(logr.Logger{}), gomock.AssignableToTypeOf(cluster)).Return(nil)
+
+	r := controllers.NewClusterReconciler(cl, newRegistryForDummyProviderReconciler(), newMockAWSIamConfigReconciler(t), validator, pcc, mhc)
 	_, err := r.Reconcile(ctx, clusterRequest(cluster))
 	g.Expect(err).ToNot(HaveOccurred())
 
@@ -362,7 +371,10 @@ func TestClusterReconcilerSetDefaultEksaVersion(t *testing.T) {
 	validator := newMockClusterValidator(t)
 	validator.EXPECT().ValidateManagementClusterName(ctx, gomock.AssignableToTypeOf(logr.Logger{}), gomock.AssignableToTypeOf(cluster)).Return(nil)
 
-	r := controllers.NewClusterReconciler(cl, newRegistryForDummyProviderReconciler(), newMockAWSIamConfigReconciler(t), validator, pcc)
+	mhc := newMockMachineHealthCheckReconciler(t)
+	mhc.EXPECT().Reconcile(ctx, gomock.AssignableToTypeOf(logr.Logger{}), gomock.AssignableToTypeOf(cluster)).Return(nil)
+
+	r := controllers.NewClusterReconciler(cl, newRegistryForDummyProviderReconciler(), newMockAWSIamConfigReconciler(t), validator, pcc, mhc)
 	_, err := r.Reconcile(ctx, clusterRequest(cluster))
 	g.Expect(err).ToNot(HaveOccurred())
 
@@ -399,6 +411,11 @@ func TestClusterReconcilerWorkloadClusterMgmtClusterNameFail(t *testing.T) {
 		},
 	}
 	cluster.SetManagedBy("my-management-cluster")
+	// clusterSpec := &c.Spec{
+	// 	Config: &c.Config{
+	// 		Cluster: cluster,
+	// 	},
+	// }
 
 	objs := []runtime.Object{cluster, managementCluster}
 	cb := fake.NewClientBuilder()
@@ -408,7 +425,7 @@ func TestClusterReconcilerWorkloadClusterMgmtClusterNameFail(t *testing.T) {
 	validator.EXPECT().ValidateManagementClusterName(ctx, gomock.AssignableToTypeOf(logr.Logger{}), gomock.AssignableToTypeOf(cluster)).
 		Return(errors.New("test error"))
 
-	r := controllers.NewClusterReconciler(cl, newRegistryForDummyProviderReconciler(), newMockAWSIamConfigReconciler(t), validator, nil)
+	r := controllers.NewClusterReconciler(cl, newRegistryForDummyProviderReconciler(), newMockAWSIamConfigReconciler(t), validator, nil, nil)
 	_, err := r.Reconcile(ctx, clusterRequest(cluster))
 	g.Expect(err).To(HaveOccurred())
 
@@ -444,7 +461,7 @@ func (dummyProviderReconciler) Reconcile(ctx context.Context, log logr.Logger, c
 	return controller.Result{}, nil
 }
 
-func (dummyProviderReconciler) ReconcileCNI(ctx context.Context, log logr.Logger, clusterSpec *cluster.Spec) (controller.Result, error) {
+func (dummyProviderReconciler) ReconcileCNI(ctx context.Context, log logr.Logger, clusterSpec *c.Spec) (controller.Result, error) {
 	return controller.Result{}, nil
 }
 
@@ -478,4 +495,9 @@ func newMockClusterValidator(t *testing.T) *mocks.MockClusterValidator {
 func newMockPackagesClient(t *testing.T) *mocks.MockPackagesClient {
 	ctrl := gomock.NewController(t)
 	return mocks.NewMockPackagesClient(ctrl)
+}
+
+func newMockMachineHealthCheckReconciler(t *testing.T) *mocks.MockMachineHealthCheckReconciler {
+	ctrl := gomock.NewController(t)
+	return mocks.NewMockMachineHealthCheckReconciler(ctrl)
 }

@@ -188,18 +188,19 @@ It is also useful to start a shell session on the Docker container running the b
 
 ### Bootstrap cluster fails to come up: node(s) already exist for a cluster with the name
 
+During `create` and `delete` CLI, EKS Anywhere tries to create a temporary KinD bootstrap cluster with the name `${CLUSTER_NAME}-eks-a-cluster` on the Admin machine. This operation can fail with below error:
+
 ```
-Error: creating bootstrap cluster: executing create cluster: ERROR: failed to create cluster: node(s) already exist for a cluster with the name \"cluster-name\"
-, try rerunning with —force-cleanup to force delete previously created bootstrap cluster
+Error: creating bootstrap cluster: executing create/delete cluster: ERROR: failed to create/delete cluster: node(s) already exist for a cluster with the name \"cluster-name\"
 ```
 
-Cluster creation fails because a cluster of the same name already exists. If you are sure the cluster is not being used, try running the `eksctl anywhere create cluster` again, adding the `--force-cleanup` option.
-
-If that doesn't work, you can manually delete the old cluster:
+This indicates that the cluster creation or deletion fails because a bootstrap cluster of the same name already exists. If you are sure the cluster is not being used, you can manually delete the old cluster:
 
 ```bash
-kind delete cluster --name cluster-name
+docker ps | grep "${CLUSTER_NAME}-eks-a-cluster-control-plane" | awk '{ print $1 }' | xargs docker rm -f
 ```
+
+Once the old KinD bootstrap cluster is deleted, you can rerun the `eksctl anywhere create` or `eksctl anywhere delete` command again.
 
 ### Cluster upgrade fails with management components on bootstrap cluster
 
@@ -354,6 +355,49 @@ This can cause nodes to become `NotReady` with the following sympotoms:
 - Kubelet log on unhealthy node contains `NetworkPluginNotReady message:Network plugin returns error: cni plugin not initialized`
 
 If more nodes need to be provisioned, either the `clusterNetwork.pods.cidrBlocks` must be expanded or the `node-cidr-mask-size` [should be reduced.]({{< relref "../getting-started/optional/cni/#node-ips-configuration-option" >}}).
+
+### Machine health check shows "Remediation is not allowed"
+
+Sometimes a cluster node is crashed but machine health check does not start the proper remediation process to recreate the failed machine. For example, if a worker node is crashed, and running `kubectl get mhc ${CLUSTER_NAME}-md-0-worker-unhealthy -n eksa-system -oyaml` shows status message below:
+
+```
+Remediation is not allowed, the number of not started or unhealthy machines exceeds maxUnhealthy
+```
+
+EKS Anywhere sets the machine health check's `MaxUnhealthy` of the workers in a worker node group to 40%. This means any further remediation is only allowed if at most 40% of the worker machines selected by "selector" are not healthy. If more than 40% of the worker machines are in unhealthy state, the remediation will not be triggered.
+
+For example, if you create an EKS Anywhere cluster with 2 worker nodes in the same worker node group, and one of the worker node is down. The machine health check will not remediate the failed machine because the actual unhealthy machines (50%) in the worker node group already exceeds the maximum percentage of the unhealthy machine (40%) allowed. As a result, the failed machine will not be replaced with new healthy machine and your cluster will be left with single worker node. In this case, we recommend you to scale up the number of worker nodes, for example, to 4. Once the 2 more worker nodes are up and running, it brings the total unhealthy worker machines to 25% which is below the 40% limit. This will trigger the machine health check remediation which replace the unhealthy machine with new one.
+
+### Etcd machines with false `NodeHealthy` condition due to `WaitingForNodeRef`
+
+When inspecting the `Machine` CRs, etcd machines might appear as `Running` but containing a false `NodeHealthy` condition, with a `WaitingForNodeRef` reason. This is a purely cosmetic issue that has no impact in the health of your cluster. This has been fixed in more recent versions of EKS-A, so this condition won't be displayed anymore in etcd machines.
+
+```yaml
+Status:
+  Addresses:
+    Address:        144.47.85.93
+    Type:           ExternalIP
+  Bootstrap Ready:  true
+  Conditions:
+    Last Transition Time:  2023-05-15T23:13:01Z
+    Status:                True
+    Type:                  Ready
+    Last Transition Time:  2023-05-15T23:12:09Z
+    Status:                True
+    Type:                  BootstrapReady
+    Last Transition Time:  2023-05-15T23:13:01Z
+    Status:                True
+    Type:                  InfrastructureReady
+    Last Transition Time:  2023-05-15T23:12:09Z
+    Reason:                WaitingForNodeRef
+    Severity:              Info
+    Status:                False
+    Type:                  NodeHealthy
+  Infrastructure Ready:    true
+  Last Updated:            2023-05-15T23:13:01Z
+  Observed Generation:     3
+  Phase:                   Running
+```
 
 ## Bare Metal troubleshooting
 

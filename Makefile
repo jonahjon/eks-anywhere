@@ -592,6 +592,7 @@ mocks: ## Generate mocks
 	${MOCKGEN} -destination=pkg/providers/tinkerbell/reconciler/mocks/reconciler.go -package=mocks -source "pkg/providers/tinkerbell/reconciler/reconciler.go"
 	${MOCKGEN} -destination=pkg/providers/cloudstack/reconciler/mocks/reconciler.go -package=mocks -source "pkg/providers/cloudstack/reconciler/reconciler.go"
 	${MOCKGEN} -destination=pkg/awsiamauth/reconciler/mocks/reconciler.go -package=mocks -source "pkg/awsiamauth/reconciler/reconciler.go"
+	${MOCKGEN} -destination=pkg/clusterapi/machinehealthcheck/mocks/reconciler.go -package=mocks -source "pkg/clusterapi/machinehealthcheck/reconciler/reconciler.go"
 	${MOCKGEN} -destination=controllers/mocks/cluster_controller.go -package=mocks -source "controllers/cluster_controller.go" AWSIamConfigReconciler ClusterValidator PackageControllerClient
 	${MOCKGEN} -destination=pkg/workflow/task_mock_test.go -package=workflow_test -source "pkg/workflow/task.go"
 	${MOCKGEN} -destination=pkg/validations/createcluster/mocks/createcluster.go -package=mocks -source "pkg/validations/createcluster/createcluster.go"
@@ -765,3 +766,11 @@ $(BINARY_DEPS_DIR)/linux-%:
 ifneq ($(FETCH_BINARIES_TARGETS),)
 .SECONDARY: $(call FULL_FETCH_BINARIES_TARGETS, $(FETCH_BINARIES_TARGETS))
 endif
+
+E2E_BINARY?=bin/e2e.test
+TINKERBELL_HARDWARE_REQUIREMENTS?=test/e2e/TINKERBELL_HARDWARE_COUNT.yaml
+
+# validate-tinkerbell-hardware-requirements checks the tinkerbell hardware requirement file with pre-defined validations
+.PHONY: validate-tinkerbell-hardware-requirements
+validate-tinkerbell-hardware-requirements: build-e2e-test-binary
+	scripts/validate_tinkerbell_hardware_file.sh $(E2E_BINARY) $(TINKERBELL_HARDWARE_REQUIREMENTS)

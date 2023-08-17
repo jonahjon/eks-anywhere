@@ -64,7 +64,7 @@ func imageRepository(image v1alpha1.Image) string {
 // used by cluster api to install components.
 // See: https://cluster-api.sigs.k8s.io/clusterctl/configuration.html
 func (c *Clusterctl) buildOverridesLayer(clusterSpec *cluster.Spec, clusterName string, provider providers.Provider) error {
-	versionsBundle := clusterSpec.ControlPlaneVersionsBundle()
+	versionsBundle := clusterSpec.RootVersionsBundle()
 
 	// Adding cluster name to path temporarily following suggestion.
 	//
@@ -153,37 +153,21 @@ func (c *Clusterctl) writeInfrastructureBundle(clusterSpec *cluster.Spec, rootFo
 }
 
 // BackupManagement saves the CAPI resources of a cluster to the provided path. This will overwrite any existing contents
-// in the path if the backup succeeds.
-func (c *Clusterctl) BackupManagement(ctx context.Context, cluster *types.Cluster, managementStatePath string) error {
-	filePath := filepath.Join(c.writer.Dir(), managementStatePath)
+// in the path if the backup succeeds. If `clusterName` is provided, it filters and backs up only the provided cluster.
+func (c *Clusterctl) BackupManagement(ctx context.Context, cluster *types.Cluster, managementStatePath, clusterName string) error {
+	filePath := filepath.Join(".", cluster.Name, managementStatePath)
 
-	// check for existing backup to prevent partial overwrites
-	_, err := os.Stat(filePath)
-	if err == nil {
-		tempPath := filepath.Join(c.writer.TempDir(), managementStatePath)
-		defer func() {
-			os.RemoveAll(tempPath)
-		}()
-		err = c.backupManagement(ctx, cluster, tempPath)
-		if err != nil {
-			return err
-		}
-
-		return ReplacePath(tempPath, filePath)
-	}
-	return c.backupManagement(ctx, cluster, filePath)
-}
-
-func (c *Clusterctl) backupManagement(ctx context.Context, cluster *types.Cluster, filePath string) error {
 	err := os.MkdirAll(filePath, os.ModePerm)
 	if err != nil {
 		return fmt.Errorf("could not create backup file for CAPI objects: %v", err)
 	}
+
 	_, err = c.Execute(
 		ctx, "move",
 		"--to-directory", filePath,
 		"--kubeconfig", cluster.KubeconfigFile,
 		"--namespace", constants.EksaSystemNamespace,
+		"--filter-cluster", clusterName,
 	)
 	if err != nil {
 		return fmt.Errorf("failed taking backup of CAPI objects: %v", err)
@@ -265,7 +249,7 @@ func (c *Clusterctl) InitInfrastructure(ctx context.Context, clusterSpec *cluste
 
 func (c *Clusterctl) buildConfig(clusterSpec *cluster.Spec, clusterName string, provider providers.Provider) (*clusterctlConfiguration, error) {
 	t := templater.New(c.writer)
-	versionsBundle := clusterSpec.ControlPlaneVersionsBundle()
+	versionsBundle := clusterSpec.RootVersionsBundle()
 
 	path, err := os.Getwd()
 	if err != nil {
@@ -443,24 +427,5 @@ func (c *Clusterctl) InstallEtcdadmProviders(ctx context.Context, clusterSpec *c
 		return fmt.Errorf("executing init: %v", err)
 	}
 
-	return nil
-}
-
-// ReplacePath replaces the contents of newpath with oldpath. The contents of newpath are first saved off to a temp directory
-// before being replaced to prevent overwriting existing files on os.Rename failure.
-func ReplacePath(oldpath string, newpath string) error {
-	tempPath := fmt.Sprintf("%s_temp", newpath)
-	err := os.Rename(newpath, tempPath)
-	if err != nil {
-		return fmt.Errorf("renaming new path to temp: %v", err)
-	}
-	err = os.Rename(oldpath, newpath)
-	if err != nil {
-		return fmt.Errorf("renaming old path: %v", err)
-	}
-	err = os.RemoveAll(tempPath)
-	if err != nil {
-		return fmt.Errorf("removing temp path: %v", err)
-	}
 	return nil
 }
